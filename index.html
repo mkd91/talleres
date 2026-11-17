@@ -88,6 +88,24 @@ input[type=search]:focus{outline:2px solid var(--accent);outline-offset:-1px}
   border:1px solid var(--line);background:#dfe6ec;isolation:isolate;
 }
 #map .empty{padding-top:90px}
+.map-wrap{position:relative}
+.area-btn{
+  position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:1000;
+  box-shadow:0 2px 10px rgba(0,0,0,.35);
+}
+.area-btn:not(:disabled):active{transform:translateX(-50%) translateY(1px)}
+.map-hint{font-size:12px;color:var(--muted);margin:5px 2px 0}
+.tap-pop .leaflet-popup-content{margin:8px}
+.tap-pop .leaflet-popup-content-wrapper{border-radius:12px}
+.picker{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:0 0 10px;overflow:hidden;box-shadow:var(--shadow)}
+.picker-head{display:flex;align-items:center;justify-content:space-between;padding:4px 4px 4px 12px;font-weight:600;font-size:15px;border-bottom:1px solid var(--line)}
+.picker-x{border:0;background:transparent;color:var(--muted);font-size:18px;width:44px;height:44px;cursor:pointer}
+.picker ul{list-style:none;margin:0;padding:0}
+.picker li + li{border-top:1px solid var(--line)}
+.picker li button{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--text);font:inherit;padding:11px 12px;cursor:pointer}
+.picker li button:active{background:var(--accent-soft)}
+.p-main{display:block;font-weight:600}
+.p-sub{display:block;font-size:13px;color:var(--muted)}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px}
 .toggle{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;min-height:44px;cursor:pointer;user-select:none;-webkit-user-select:none}
 .toggle input{width:22px;height:22px;margin:0;accent-color:var(--accent)}
@@ -164,7 +182,7 @@ footer a{color:inherit}
   <header>
     <h1><span aria-hidden="true">🔧</span> Talleres cerca <small>OpenStreetMap</small></h1>
     <form id="searchForm" role="search" autocomplete="off">
-      <input id="q" type="search" enterkeyhint="search" placeholder="Ciudad, dirección o código postal" aria-label="Lugar" autocapitalize="words" autocorrect="off" spellcheck="false">
+      <input id="q" type="search" enterkeyhint="search" placeholder="Calle y número, ciudad o C.P." aria-label="Lugar" autocapitalize="words" autocorrect="off" spellcheck="false">
       <button id="searchBtn" class="btn primary" type="submit">Buscar</button>
     </form>
     <div class="row2">
@@ -181,7 +199,15 @@ footer a{color:inherit}
   </header>
 
   <div id="status" class="status" role="status" aria-live="polite" hidden></div>
-  <div id="map" aria-label="Mapa de talleres"></div>
+  <div id="picker" class="picker" hidden>
+    <div class="picker-head"><span>¿Cuál de estos lugares?</span><button id="pickerClose" type="button" class="picker-x" aria-label="Cerrar">✕</button></div>
+    <ul id="pickerList"></ul>
+  </div>
+  <div class="map-wrap">
+    <div id="map" aria-label="Mapa de talleres"></div>
+    <button id="areaBtn" class="btn small primary area-btn" type="button" hidden>🔍 Buscar en esta zona</button>
+  </div>
+  <div class="map-hint">Toca el mapa para buscar alrededor de un punto, o muévelo y pulsa «Buscar en esta zona».</div>
 
   <div class="toolbar">
     <label class="toggle"><input type="checkbox" id="phoneOnly"> Solo con teléfono</label>
@@ -222,7 +248,9 @@ footer a{color:inherit}
     'https://overpass.private.coffee/api/interpreter'
   ];
   var NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+  var NOMINATIM_REVERSE = 'https://nominatim.openstreetmap.org/reverse';
   var RADII = [1, 3, 5, 10, 20];
+  var MAX_AREA_KM = 40;          // lado máximo de la zona del mapa que se puede buscar
   var KEY_VISITED = 'talleresCerca.visitados';
   var KEY_PREFS = 'talleresCerca.prefs';
   var T_GEO = 15000, T_NOMINATIM = 15000;
@@ -239,7 +267,8 @@ footer a{color:inherit}
     form: $('#searchForm'), q: $('#q'), geoBtn: $('#geoBtn'), radius: $('#radius'),
     status: $('#status'), map: $('#map'), phoneOnly: $('#phoneOnly'), csvBtn: $('#csvBtn'),
     copyBtn: $('#copyBtn'), summary: $('#summary'), list: $('#list'), toast: $('#toast'),
-    more: $('#more'), gmapsAll: $('#gmapsAll'), osmAdd: $('#osmAdd')
+    more: $('#more'), gmapsAll: $('#gmapsAll'), osmAdd: $('#osmAdd'),
+    picker: $('#picker'), pickerList: $('#pickerList'), pickerClose: $('#pickerClose'), areaBtn: $('#areaBtn')
   };
 
   /* ---------- localStorage (zawsze w try/catch) ---------- */
@@ -315,17 +344,31 @@ footer a{color:inherit}
     });
   }
 
+  var TYPE_ES = {
+    city: 'ciudad', town: 'ciudad', village: 'pueblo', hamlet: 'aldea', municipality: 'municipio',
+    suburb: 'barrio', neighbourhood: 'barrio', quarter: 'barrio', road: 'calle', house: 'dirección',
+    building: 'edificio', postcode: 'código postal', county: 'comarca', province: 'provincia', state: 'comunidad'
+  };
+
+  // Nombre corto y legible: «Calle Mayor 5, Elda», «Elda», «03600, Elda»…
   function placeLabel(d) {
     var a = d.address || {};
     var city = a.city || a.town || a.village || a.municipality || a.county || '';
-    var name = d.name || String(d.display_name || '').split(',')[0].trim();
-    if (!name) return city || 'el lugar buscado';
-    return (city && city !== name) ? name + ', ' + city : name;
+    var road = a.road || a.pedestrian || a.square || '';
+    var main = d.name || (road ? road + (a.house_number ? ' ' + a.house_number : '') : '') ||
+      String(d.display_name || '').split(',')[0].trim();
+    if (!main) return city || 'el lugar buscado';
+    return (city && city !== main) ? main + ', ' + city : main;
+  }
+  function placeSub(d) {
+    var a = d.address || {};
+    return [TYPE_ES[d.addresstype] || '', a.province || a.state || ''].filter(Boolean).join(' · ');
   }
 
-  async function geocode(q, signal) {
+  // Hasta 6 candidatos para el texto buscado (calle y número, ciudad, código postal…).
+  async function geocodeAll(q, signal) {
     var params = new URLSearchParams({
-      q: q, format: 'jsonv2', countrycodes: 'es', limit: '1', addressdetails: '1', 'accept-language': 'es'
+      q: q, format: 'jsonv2', countrycodes: 'es', limit: '6', addressdetails: '1', 'accept-language': 'es'
     });
     var data;
     try {
@@ -337,15 +380,76 @@ footer a{color:inherit}
         : 'No se pudo buscar el lugar (sin conexión o servicio no disponible).');
     }
     if (!Array.isArray(data) || !data.length) {
-      throw userError('No se encontró «' + q + '» en España. Prueba con otro nombre o un código postal.');
+      throw userError('No se encontró «' + q + '» en España. Prueba con «calle número, ciudad» o un código postal.');
     }
-    var d = data[0];
-    return { lat: parseFloat(d.lat), lon: parseFloat(d.lon), label: placeLabel(d), mine: false };
+    var out = [], seen = {};
+    data.forEach(function (d) {
+      var p = { lat: parseFloat(d.lat), lon: parseFloat(d.lon), label: placeLabel(d), sub: placeSub(d), mine: false };
+      var key = p.label + '|' + p.sub;
+      if (seen[key]) return;
+      seen[key] = 1;
+      out.push(p);
+    });
+    return out;
+  }
+
+  // Solo se pregunta si los candidatos están en sitios distintos (más de 2 km entre sí).
+  function needsPick(list) {
+    if (list.length < 2) return false;
+    var f = list[0];
+    return list.some(function (p) { return haversine(f.lat, f.lon, p.lat, p.lon) > 2; });
+  }
+
+  function cancelError() { var e = new Error('cancel'); e.cancel = true; return e; }
+
+  // Muestra la lista de candidatos y espera a que se elija uno.
+  function pickPlace(list, signal) {
+    return new Promise(function (resolve, reject) {
+      els.pickerList.innerHTML = '';
+      function done() {
+        els.picker.hidden = true;
+        els.pickerClose.onclick = null;
+        signal.removeEventListener('abort', onAbort);
+      }
+      function onAbort() { done(); reject(new Error('abort')); }
+      list.forEach(function (p) {
+        var li = document.createElement('li');
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.innerHTML = '<span class="p-main"></span><span class="p-sub"></span>';
+        b.querySelector('.p-main').textContent = p.label;
+        b.querySelector('.p-sub').textContent = p.sub;
+        b.addEventListener('click', function () { done(); resolve(p); });
+        li.appendChild(b);
+        els.pickerList.appendChild(li);
+      });
+      signal.addEventListener('abort', onAbort);
+      els.pickerClose.onclick = function () { done(); reject(cancelError()); };
+      els.picker.hidden = false;
+      els.picker.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
+
+  // Dirección aproximada de un punto tocado en el mapa (para el resumen).
+  async function reverseLabel(lat, lon, signal) {
+    var params = new URLSearchParams({
+      lat: lat.toFixed(6), lon: lon.toFixed(6), format: 'jsonv2', zoom: '17', addressdetails: '1', 'accept-language': 'es'
+    });
+    try {
+      var d = await nominatimGet(params, signal, NOMINATIM_REVERSE);
+      if (d && !d.error) return placeLabel(d);
+    } catch (e) {
+      if (signal.aborted) throw e;
+    }
+    return 'un punto del mapa';
   }
 
   /* ---------- Overpass ---------- */
-  function buildQuery(lat, lon, km) {
-    var a = 'around:' + Math.round(km * 1000) + ',' + lat.toFixed(6) + ',' + lon.toFixed(6);
+  // where = { lat, lon, label, mine, bbox?: { s, w, n, e } } -> círculo de km alrededor del punto, o el rectángulo bbox.
+  function buildQuery(where, km) {
+    var a = where.bbox
+      ? [where.bbox.s, where.bbox.w, where.bbox.n, where.bbox.e].map(function (n) { return n.toFixed(6); }).join(',')
+      : 'around:' + Math.round(km * 1000) + ',' + where.lat.toFixed(6) + ',' + where.lon.toFixed(6);
     return '[out:json][timeout:25];(' +
       'nwr(' + a + ')["shop"="car_repair"];' +
       'nwr(' + a + ')["craft"="car_repair"];' +
@@ -377,8 +481,8 @@ footer a{color:inherit}
   // Servidor principal con reintentos (si está saturado responde enseguida con 429/502/504)
   // y, en paralelo, servidores de reserva en cuanto el principal falla o tarda más de T_HEDGE.
   // Gana la primera respuesta válida; las demás peticiones se cancelan.
-  function overpass(lat, lon, km, signal, onFallback) {
-    var body = 'data=' + encodeURIComponent(buildQuery(lat, lon, km));
+  function overpass(where, km, signal, onFallback) {
+    var body = 'data=' + encodeURIComponent(buildQuery(where, km));
     var ctrl = new AbortController();
     var onOuter = function () { ctrl.abort(); };
     signal.addEventListener('abort', onOuter);
@@ -448,11 +552,11 @@ footer a{color:inherit}
 
   /* ---------- Fuente alternativa: Nominatim ---------- */
   var lastNominatim = 0;
-  async function nominatimGet(params, signal) {
+  async function nominatimGet(params, signal, base) {
     var wait = lastNominatim + NOMINATIM_GAP - Date.now();
     if (wait > 0) await sleep(wait, signal);
     lastNominatim = Date.now();
-    return fetchJSON(NOMINATIM + '?' + params.toString(), {}, T_NOMINATIM, signal);
+    return fetchJSON((base || NOMINATIM) + '?' + params.toString(), {}, T_NOMINATIM, signal);
   }
 
   // Resultado de Nominatim -> elemento con el mismo formato que Overpass (para reutilizar toItems).
@@ -470,9 +574,13 @@ footer a{color:inherit}
   }
 
   // Talleres (shop=car_repair) dentro del cuadrado que contiene el círculo; hasta 3 páginas de 40.
-  async function nominatimPOIs(lat, lon, km, signal) {
+  async function nominatimPOIs(where, km, signal) {
+    var lat = where.lat, lon = where.lon;
     var dLat = km / 111.32, dLon = km / (111.32 * Math.cos(lat * Math.PI / 180));
-    var viewbox = [lon - dLon, lat + dLat, lon + dLon, lat - dLat].map(function (n) { return n.toFixed(5); }).join(',');
+    var box = where.bbox
+      ? [where.bbox.w, where.bbox.n, where.bbox.e, where.bbox.s]
+      : [lon - dLon, lat + dLat, lon + dLon, lat - dLat];
+    var viewbox = box.map(function (n) { return n.toFixed(5); }).join(',');
     var out = [], seen = {}, exclude = [];
     for (var page = 0; page < 3; page++) {
       var params = new URLSearchParams({
@@ -496,7 +604,7 @@ footer a{color:inherit}
 
   // Overpass es la fuente principal (completa). Si falla o tarda, se consulta Nominatim en paralelo
   // y se usan sus resultados cuando Overpass ha fallado o ya han pasado T_ALT_ACCEPT ms.
-  function findWorkshops(lat, lon, km, signal, onFallback) {
+  function findWorkshops(where, km, signal, onFallback) {
     return new Promise(function (resolve, reject) {
       var t0 = Date.now();
       var opCtrl = new AbortController(), altCtrl = new AbortController();
@@ -525,12 +633,12 @@ footer a{color:inherit}
       function startAlt() {
         if (done || altStarted) return;
         altStarted = true;
-        nominatimPOIs(lat, lon, km, altCtrl.signal).then(
+        nominatimPOIs(where, km, altCtrl.signal).then(
           function (els) { alt = els; check(); },
           function (e) { altErr = e; check(); });
       }
 
-      overpass(lat, lon, km, opCtrl.signal, onFallback).then(
+      overpass(where, km, opCtrl.signal, onFallback).then(
         function (els) { finish(resolve, { elements: els, source: 'overpass' }); },
         function (e) { if (done) return; opErr = e; startAlt(); check(); });
     });
@@ -639,9 +747,14 @@ footer a{color:inherit}
   // Búsqueda «taller mecánico» en Google Maps alrededor del centro, con un zoom acorde al radio.
   var RADIUS_ZOOM = { 1: 15, 3: 14, 5: 13, 10: 12, 20: 11 };
   function googleAllUrl() {
-    var c = state.center;
+    var c = state.center, lat = c.lat, lon = c.lon, z = RADIUS_ZOOM[prefs.radius] || 13;
+    if (c.bbox && map) {
+      // Búsqueda por zona: la misma vista que el mapa.
+      var mc = map.getCenter();
+      lat = mc.lat; lon = mc.lng; z = Math.round(map.getZoom());
+    }
     return 'https://www.google.com/maps/search/taller+mec%C3%A1nico/@' +
-      c.lat.toFixed(6) + ',' + c.lon.toFixed(6) + ',' + (RADIUS_ZOOM[prefs.radius] || 13) + 'z';
+      lat.toFixed(6) + ',' + lon.toFixed(6) + ',' + z + 'z';
   }
   // Editor de OpenStreetMap en la zona que se ve ahora en el mapa (o en el centro de búsqueda).
   function osmEditUrl() {
@@ -655,12 +768,18 @@ footer a{color:inherit}
 
   /* ---------- mapa ---------- */
   var map = null, pinLayer = null, centerLayer = null, markers = {};
+  var lastAutoMove = 0, lastPopupClose = 0;
+
+  // Marca los movimientos del mapa hechos por la app (no por el usuario).
+  function autoMove() { lastAutoMove = Date.now(); }
 
   function initMap() {
     if (typeof L === 'undefined') {
       els.map.innerHTML = '<div class="empty">No se pudo cargar el mapa. La lista funciona igualmente.</div>';
+      document.querySelector('.map-hint').hidden = true;
       return;
     }
+    autoMove();
     map = L.map(els.map, { zoomControl: true }).setView([40.2, -3.7], 5);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -668,6 +787,70 @@ footer a{color:inherit}
     }).addTo(map);
     centerLayer = L.layerGroup().addTo(map);
     pinLayer = L.layerGroup().addTo(map);
+
+    map.on('click', onMapTap);
+    map.on('popupclose', function () { lastPopupClose = Date.now(); });
+    map.on('dragend', showAreaBtn);
+    map.on('zoomend', function () { if (Date.now() - lastAutoMove > 1500) showAreaBtn(); });
+  }
+
+  /* Toque en el mapa -> «Buscar aquí» (radio alrededor del punto) */
+  function onMapTap(e) {
+    if (Date.now() - lastPopupClose < 400) return; // ese toque solo cerraba otro aviso
+    var lat = e.latlng.lat, lon = e.latlng.lng;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn small primary';
+    b.textContent = '📍 Buscar aquí (' + prefs.radius + ' km)';
+    b.addEventListener('click', function () {
+      map.closePopup();
+      run(pointJob(lat, lon));
+    });
+    L.popup({ closeButton: false, className: 'tap-pop', offset: [0, -2] })
+      .setLatLng(e.latlng).setContent(b).openOn(map);
+  }
+
+  function pointJob(lat, lon) {
+    return {
+      msg: 'Buscando…',
+      getCenter: async function (signal) {
+        var label = await reverseLabel(lat, lon, signal);
+        return { lat: lat, lon: lon, label: label, mine: false };
+      }
+    };
+  }
+
+  /* Mover el mapa -> «Buscar en esta zona» (exactamente el rectángulo visible) */
+  var areaErrShown = false;
+  function showAreaBtn() {
+    if (!map) return;
+    els.areaBtn.hidden = false;
+    if (areaErrShown) { areaErrShown = false; setStatus(''); } // el aviso de «zona demasiado grande» ya no aplica
+  }
+
+  function bboxSizeKm(b) {
+    var midLat = (b.s + b.n) / 2;
+    return { w: haversine(midLat, b.w, midLat, b.e), h: haversine(b.s, b.w, b.n, b.w) };
+  }
+
+  function areaSearch() {
+    if (!map) return;
+    var B = map.getBounds(), c = B.getCenter();
+    var bbox = { s: B.getSouth(), w: B.getWest(), n: B.getNorth(), e: B.getEast() };
+    var size = bboxSizeKm(bbox);
+    if (Math.max(size.w, size.h) > MAX_AREA_KM) {
+      setStatus('La zona es demasiado grande (' + Math.round(size.w) + ' × ' + Math.round(size.h) +
+        ' km). Acerca el mapa hasta que mida como mucho ' + MAX_AREA_KM + ' km.', 'error');
+      areaErrShown = true;
+      return;
+    }
+    areaErrShown = false;
+    run({
+      msg: 'Buscando talleres en la zona…',
+      getCenter: function () {
+        return Promise.resolve({ lat: c.lat, lon: c.lng, label: 'la zona del mapa', mine: false, bbox: bbox });
+      }
+    });
   }
 
   function pinIcon(n, isVisited, isSel) {
@@ -685,6 +868,12 @@ footer a{color:inherit}
     if (!map) return;
     centerLayer.clearLayers();
     var c = state.center;
+    if (c.bbox) {
+      L.rectangle([[c.bbox.s, c.bbox.w], [c.bbox.n, c.bbox.e]], {
+        color: '#e53935', weight: 1.5, opacity: 0.6, dashArray: '6 6', fillOpacity: 0.03, interactive: false
+      }).addTo(centerLayer);
+      return;
+    }
     L.circle([c.lat, c.lon], {
       radius: prefs.radius * 1000, color: '#e53935', weight: 1.5, opacity: 0.6, dashArray: '6 6',
       fillColor: '#e53935', fillOpacity: 0.04, interactive: false
@@ -715,6 +904,11 @@ footer a{color:inherit}
   function fitAll(list) {
     if (!map || !state.center) return;
     var c = state.center;
+    autoMove();
+    if (c.bbox) {
+      map.fitBounds([[c.bbox.s, c.bbox.w], [c.bbox.n, c.bbox.e]]);
+      return;
+    }
     if (!list.length) {
       map.fitBounds(L.latLng(c.lat, c.lon).toBounds(prefs.radius * 2000));
       return;
@@ -755,6 +949,7 @@ footer a{color:inherit}
     if (!map || !rec) return;
     select(id);
     els.map.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    autoMove();
     map.setView(rec.m.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
   }
 
@@ -790,11 +985,12 @@ footer a{color:inherit}
     var list = state.items.filter(function (it) { return !prefs.phoneOnly || it.phones.length; });
     state.shown = list;
     if (!state.center) {
-      els.list.innerHTML = '<li class="empty">Busca una ciudad, dirección o código postal, o pulsa «📍 Mi ubicación» para ver los talleres cercanos.</li>';
+      els.list.innerHTML = '<li class="empty">Escribe una calle y número, ciudad o código postal, pulsa «📍 Mi ubicación», o elige un punto o una zona en el mapa.</li>';
     } else if (!state.items.length) {
-      els.list.innerHTML = '<li class="empty">No hay talleres registrados en OpenStreetMap a ' + prefs.radius + ' km. Prueba con un radio mayor.</li>';
+      els.list.innerHTML = '<li class="empty">No hay talleres registrados en OpenStreetMap ' + esc(whereText(state.center)) + '. ' +
+        (state.center.bbox ? 'Prueba con una zona mayor.' : 'Prueba con un radio mayor.') + '</li>';
     } else if (!list.length) {
-      els.list.innerHTML = '<li class="empty">Ningún taller con teléfono en este radio. Desactiva «Solo con teléfono» o amplía el radio.</li>';
+      els.list.innerHTML = '<li class="empty">Ningún taller con teléfono en esta búsqueda. Desactiva «Solo con teléfono» o busca en una zona mayor.</li>';
     } else {
       els.list.innerHTML = list.map(function (it, i) { return cardHTML(it, i + 1); }).join('');
     }
@@ -808,12 +1004,21 @@ footer a{color:inherit}
     }
   }
 
+  // «a 5 km de Calle Mayor 5, Elda» o «en la zona marcada del mapa (≈ 6 × 4 km)»
+  function whereText(c, km) {
+    if (c.bbox) {
+      var s = bboxSizeKm(c.bbox);
+      return 'en la zona marcada del mapa (≈ ' + Math.max(1, Math.round(s.w)) + ' × ' + Math.max(1, Math.round(s.h)) + ' km)';
+    }
+    return 'a ' + (km || prefs.radius) + ' km de ' + c.label;
+  }
+
   function updateSummary() {
     if (!state.center) { els.summary.textContent = ''; return; }
     var total = state.items.length;
     var withTel = state.items.filter(function (i) { return i.phones.length; }).length;
     var vis = state.shown.filter(function (i) { return visited[i.id]; }).length;
-    var s = total + (total === 1 ? ' taller' : ' talleres') + ' a ' + prefs.radius + ' km de ' + state.center.label +
+    var s = total + (total === 1 ? ' taller ' : ' talleres ') + whereText(state.center) +
       ' · ' + withTel + ' con teléfono';
     if (vis) s += ' · ' + vis + (vis === 1 ? ' visitado' : ' visitados');
     if (prefs.phoneOnly && state.shown.length !== total) s += ' · mostrando ' + state.shown.length;
@@ -872,22 +1077,24 @@ footer a{color:inherit}
     var signal = ctrl.signal;
     var radius = prefs.radius;
     busyStart = 0;
+    els.areaBtn.hidden = true;
+    if (map) map.closePopup();
     try {
       setStatus(job.msg || 'Buscando…', 'busy');
       var c = await job.getCenter(signal);
       if (signal.aborted) return;
-      setStatus('Buscando talleres a ' + radius + ' km…', 'busy');
-      var res = await findWorkshops(c.lat, c.lon, radius, signal, function () {
-        if (!signal.aborted) setStatus('Buscando talleres a ' + radius + ' km (probando servidor alternativo)…', 'busy');
+      setStatus('Buscando talleres ' + whereText(c, radius) + '…', 'busy');
+      var res = await findWorkshops(c, radius, signal, function () {
+        if (!signal.aborted) setStatus('Buscando talleres ' + whereText(c, radius) + ' (probando servidor alternativo)…', 'busy');
       });
       if (signal.aborted) return;
       var items = toItems(res.elements, c).filter(function (it) {
         // Nominatim busca en un cuadrado: quitar las esquinas fuera del radio.
-        return res.source !== 'nominatim' || it.dist <= radius;
+        return res.source !== 'nominatim' || c.bbox || it.dist <= radius;
       });
       state.center = c;
       state.source = res.source;
-      state.fetched = { center: c, radius: radius, items: items };
+      state.fetched = { center: c, radius: c.bbox ? null : radius, items: items };
       state.items = items;
       state.selected = null;
       drawCenter();
@@ -897,9 +1104,10 @@ footer a{color:inherit}
       } else {
         setStatus('');
       }
-      render(true);
+      render(!c.bbox); // en la búsqueda por zona el mapa se queda donde lo dejó el usuario
     } catch (e) {
       if (signal.aborted) return;
+      if (e && e.cancel) { setStatus(''); return; }
       if (window.console) console.error(e);
       setStatus(e && e.user ? e.message : 'Ha ocurrido un error inesperado. Inténtalo de nuevo.', 'error',
         function () { run(job); });
@@ -945,7 +1153,8 @@ footer a{color:inherit}
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'talleres_' + slug(state.center ? state.center.label : '') + '_' + prefs.radius + 'km_' + today() + '.csv';
+    var c = state.center;
+    a.download = 'talleres_' + (c && c.bbox ? 'zona-mapa' : slug(c ? c.label : '') + '_' + prefs.radius + 'km') + '_' + today() + '.csv';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -955,7 +1164,7 @@ footer a{color:inherit}
 
   function buildText() {
     var list = state.shown;
-    var lines = ['Talleres a ' + prefs.radius + ' km de ' + (state.center ? state.center.label : '') + ' (' + list.length + ')', ''];
+    var lines = ['Talleres ' + (state.center ? whereText(state.center) : '') + ' (' + list.length + ')', ''];
     list.forEach(function (it, i) {
       lines.push((i + 1) + '. ' + it.name + ' — ' + fmtKm(it.dist) + (visited[it.id] ? ' [visitado]' : ''));
       if (it.address) lines.push('   ' + it.address);
@@ -1006,12 +1215,22 @@ footer a{color:inherit}
   els.form.addEventListener('submit', function (e) {
     e.preventDefault();
     var q = els.q.value.trim();
-    if (!q) { setStatus('Escribe una ciudad, dirección o código postal.', 'error'); els.q.focus(); return; }
+    if (!q) { setStatus('Escribe una calle y número, ciudad o código postal.', 'error'); els.q.focus(); return; }
     els.q.blur();
     prefs.q = q;
     save(KEY_PREFS, prefs);
-    run({ getCenter: function (signal) { return geocode(q, signal); }, msg: 'Buscando «' + q + '»…' });
+    run({
+      msg: 'Buscando «' + q + '»…',
+      getCenter: async function (signal) {
+        var list = await geocodeAll(q, signal);
+        if (!needsPick(list)) return list[0];
+        setStatus(''); // la lista de opciones ya lo explica
+        return pickPlace(list, signal);
+      }
+    });
   });
+
+  els.areaBtn.addEventListener('click', areaSearch);
 
   els.geoBtn.addEventListener('click', function () {
     run({ getCenter: function () { return getPosition(); }, msg: 'Buscando tu ubicación…' });
@@ -1028,7 +1247,12 @@ footer a{color:inherit}
     if (state.ctrl && state.lastJob) {
       // Hay una búsqueda en curso: repetirla con el nuevo radio.
       run(state.lastJob);
-    } else if (state.center && state.fetched && state.fetched.center === state.center && state.fetched.radius >= r) {
+    } else if (state.center && state.center.bbox) {
+      // Venía de una búsqueda por zona: pasar a radio alrededor del centro del mapa.
+      var mc = map ? map.getCenter() : { lat: state.center.lat, lng: state.center.lon };
+      run(pointJob(mc.lat, mc.lng));
+    } else if (state.center && state.fetched && state.fetched.center === state.center &&
+               state.fetched.radius != null && state.fetched.radius >= r) {
       // Radio menor que el ya descargado: filtrar en local, sin nueva consulta.
       state.items = state.fetched.items.filter(function (it) { return it.dist <= r; });
       state.selected = null;
