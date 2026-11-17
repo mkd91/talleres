@@ -856,7 +856,20 @@ footer a{color:inherit}
   function webLabel(w) { return w.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, ''); }
   function coords(it) { return it.lat.toFixed(6) + '%2C' + it.lon.toFixed(6); }
   function gmaps(it) { return 'https://www.google.com/maps/search/?api=1&query=' + coords(it); }
-  function gdir(it) { return 'https://www.google.com/maps/dir/?api=1&destination=' + coords(it); }
+  // Ficha del negocio en Google Maps (horario, «abierto ahora», opiniones) buscando por nombre y dirección.
+  // Sin nombre o sin dirección no se puede identificar: se usa el punto en el mapa.
+  function hasPlaceQuery(it) { return !it.noName && !!it.address; }
+  function gmapsPlace(it) {
+    return hasPlaceQuery(it)
+      ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(it.name + ', ' + it.address)
+      : gmaps(it);
+  }
+  // Ruta: al negocio por nombre y dirección (el punto de Overture a veces está desplazado cientos de metros);
+  // sin nombre o dirección, al punto del mapa.
+  function gdir(it) {
+    return 'https://www.google.com/maps/dir/?api=1&destination=' +
+      (!it.noName && it.address ? encodeURIComponent(it.name + ', ' + it.address) : coords(it));
+  }
   // Enlace al objeto de OpenStreetMap (si el taller está en OSM).
   function osmUrl(it) {
     var id = [it.id].concat(it.alt || []).filter(function (x) { return x.indexOf('ovt/') !== 0; })[0];
@@ -1094,8 +1107,9 @@ footer a{color:inherit}
     if (it.hours) info += '<div><span aria-hidden="true">🕒</span><span>' + esc(it.hours) + '</span></div>';
     if (info) h += '<div class="info">' + info + '</div>';
     h += '<div class="links">' +
-      '<a href="' + gmaps(it) + '" target="_blank" rel="noopener">🗺️ Google Maps</a>' +
-      '<a href="' + gdir(it) + '" target="_blank" rel="noopener">🚗 Cómo llegar</a>' +
+      '<a href="' + esc(gmapsPlace(it)) + '" target="_blank" rel="noopener">' +
+        (hasPlaceQuery(it) ? '🕒 Horario en Google' : '🗺️ Google Maps') + '</a>' +
+      '<a href="' + esc(gdir(it)) + '" target="_blank" rel="noopener">🚗 Cómo llegar</a>' +
       '</div>';
     return h + '</li>';
   }
@@ -1297,7 +1311,7 @@ footer a{color:inherit}
       rows.push([
         i + 1, it.name, it.cat, kmNum(it.dist), it.address,
         it.phones.map(function (p) { return p.label; }).join(' / '),
-        it.email, it.web, it.hours, visited[it.id] ? 'Sí' : 'No', gmaps(it), osmUrl(it)
+        it.email, it.web, it.hours, visited[it.id] ? 'Sí' : 'No', gmapsPlace(it), osmUrl(it)
       ]);
     });
     var csv = rows.map(function (r) { return r.map(csvCell).join(';'); }).join('\r\n') + '\r\n';
@@ -1324,7 +1338,7 @@ footer a{color:inherit}
       if (it.email) lines.push('   Email: ' + it.email);
       if (it.web) lines.push('   Web: ' + it.web);
       if (it.hours) lines.push('   Horario: ' + it.hours);
-      lines.push('   ' + gmaps(it));
+      lines.push('   ' + gmapsPlace(it));
       lines.push('');
     });
     return lines.join('\n').trim() + '\n';
