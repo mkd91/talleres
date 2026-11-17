@@ -98,6 +98,10 @@ input[type=search]:focus{outline:2px solid var(--accent);outline-offset:-1px}
   .actions .btn{flex:1}
 }
 .summary{color:var(--muted);font-size:14px;margin:2px 0 10px}
+.more{margin:0 0 12px}
+.more-row{display:flex;gap:8px;flex-wrap:wrap}
+.more-row .btn{flex:1 1 auto;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;text-align:center}
+.more small{display:block;color:var(--muted);font-size:12px;line-height:1.45;margin-top:6px}
 ol.list{list-style:none;margin:0;padding:0 0 16px;display:flex;flex-direction:column;gap:10px}
 .card{
   background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
@@ -187,6 +191,14 @@ footer a{color:inherit}
     </div>
   </div>
   <div id="summary" class="summary"></div>
+  <div id="more" class="more" hidden>
+    <div class="more-row">
+      <a id="gmapsAll" class="btn small" href="https://www.google.com/maps" target="_blank" rel="noopener">🔎 Ver todos en Google Maps</a>
+      <a id="osmAdd" class="btn small" href="https://www.openstreetmap.org/edit" target="_blank" rel="noopener">➕ Añadir taller que falta</a>
+    </div>
+    <small>OpenStreetMap no tiene todos los talleres. Google Maps muestra más, pero no entran en esta lista.
+      Los que añadas a OpenStreetMap (cuenta gratuita; en iPhone es más cómodo con la app Every Door) aparecerán aquí en unos minutos.</small>
+  </div>
   <ol id="list" class="list"></ol>
   <noscript><p class="empty">Esta aplicación necesita JavaScript.</p></noscript>
 
@@ -226,7 +238,8 @@ footer a{color:inherit}
   var els = {
     form: $('#searchForm'), q: $('#q'), geoBtn: $('#geoBtn'), radius: $('#radius'),
     status: $('#status'), map: $('#map'), phoneOnly: $('#phoneOnly'), csvBtn: $('#csvBtn'),
-    copyBtn: $('#copyBtn'), summary: $('#summary'), list: $('#list'), toast: $('#toast')
+    copyBtn: $('#copyBtn'), summary: $('#summary'), list: $('#list'), toast: $('#toast'),
+    more: $('#more'), gmapsAll: $('#gmapsAll'), osmAdd: $('#osmAdd')
   };
 
   /* ---------- localStorage (zawsze w try/catch) ---------- */
@@ -623,6 +636,23 @@ footer a{color:inherit}
   function gdir(it) { return 'https://www.google.com/maps/dir/?api=1&destination=' + coords(it); }
   function osmUrl(it) { return 'https://www.openstreetmap.org/' + it.id; }
 
+  // Búsqueda «taller mecánico» en Google Maps alrededor del centro, con un zoom acorde al radio.
+  var RADIUS_ZOOM = { 1: 15, 3: 14, 5: 13, 10: 12, 20: 11 };
+  function googleAllUrl() {
+    var c = state.center;
+    return 'https://www.google.com/maps/search/taller+mec%C3%A1nico/@' +
+      c.lat.toFixed(6) + ',' + c.lon.toFixed(6) + ',' + (RADIUS_ZOOM[prefs.radius] || 13) + 'z';
+  }
+  // Editor de OpenStreetMap en la zona que se ve ahora en el mapa (o en el centro de búsqueda).
+  function osmEditUrl() {
+    var lat = state.center.lat, lon = state.center.lon, z = 18;
+    if (map) {
+      var mc = map.getCenter();
+      lat = mc.lat; lon = mc.lng; z = Math.max(18, Math.round(map.getZoom()));
+    }
+    return 'https://www.openstreetmap.org/edit#map=' + z + '/' + lat.toFixed(5) + '/' + lon.toFixed(5);
+  }
+
   /* ---------- mapa ---------- */
   var map = null, pinLayer = null, centerLayer = null, markers = {};
 
@@ -771,6 +801,11 @@ footer a{color:inherit}
     drawMarkers(list, fit);
     updateSummary();
     els.csvBtn.disabled = els.copyBtn.disabled = !list.length;
+    els.more.hidden = !state.center;
+    if (state.center) {
+      els.gmapsAll.href = googleAllUrl();
+      els.osmAdd.href = osmEditUrl();
+    }
   }
 
   function updateSummary() {
@@ -1029,6 +1064,10 @@ footer a{color:inherit}
     if (!b) return;
     focusOnMap(b.closest('.card').dataset.id);
   });
+
+  // Actualizar el enlace justo antes de abrirlo (el mapa puede haberse movido).
+  els.gmapsAll.addEventListener('click', function () { if (state.center) els.gmapsAll.href = googleAllUrl(); });
+  els.osmAdd.addEventListener('click', function () { if (state.center) els.osmAdd.href = osmEditUrl(); });
 
   els.csvBtn.addEventListener('click', exportCSV);
   els.copyBtn.addEventListener('click', copyList);
