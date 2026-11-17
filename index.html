@@ -222,7 +222,7 @@ footer a{color:inherit}
       <a id="gmapsAll" class="btn small" href="https://www.google.com/maps" target="_blank" rel="noopener">🔎 Ver todos en Google Maps</a>
       <a id="osmAdd" class="btn small" href="https://www.openstreetmap.org/edit" target="_blank" rel="noopener">➕ Añadir taller que falta</a>
     </div>
-    <small>OpenStreetMap no tiene todos los talleres. Google Maps muestra más, pero no entran en esta lista.
+    <small>La lista combina Overture Maps y OpenStreetMap; puede faltar algún taller. Google Maps muestra más, pero no entran en esta lista.
       Los que añadas a OpenStreetMap (cuenta gratuita; en iPhone es más cómodo con la app Every Door) aparecerán aquí en unos minutos.</small>
   </div>
   <ol id="list" class="list"></ol>
@@ -230,8 +230,9 @@ footer a{color:inherit}
 
   <footer>
     Datos: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL)
+    · Lugares: © <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (CDLA Permissive 2.0, versión <span id="ovtRelease">2026-10</span>)
     · Búsqueda: Nominatim · Consultas: Overpass API<br>
-    Solo aparecen los talleres registrados en OpenStreetMap; puede haber datos incompletos.
+    Solo aparecen los talleres registrados en Overture Maps u OpenStreetMap; puede haber datos incompletos o desactualizados.
   </footer>
 </div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -261,6 +262,12 @@ footer a{color:inherit}
   var T_ALT_START = 6000;        // se lanza si Overpass falla o tarda más de esto
   var T_ALT_ACCEPT = 12000;      // a partir de aquí se aceptan sus resultados si Overpass no ha respondido
   var NOMINATIM_GAP = 1100;      // política de uso de Nominatim: máx. 1 petición por segundo
+  // Overture Maps (ficheros estáticos junto a esta página):
+  var OVT_BASE = 'data/ovt/';
+  var T_OVT = 15000;
+  var T_OSM_WITH_OVT = 4000;     // con datos de Overture, OSM solo complementa: no esperar más de esto
+  var OSM_PAUSE = 5 * 60000;     // si OSM no responde, no volver a esperarlo durante 5 min
+  var MAX_SHOWN = 300;           // máximo de talleres en lista y mapa (los más cercanos)
 
   function $(s) { return document.querySelector(s); }
   var els = {
@@ -288,7 +295,9 @@ footer a{color:inherit}
   var prefs = Object.assign({ radius: 5, phoneOnly: false, q: '' }, load(KEY_PREFS, {}));
   if (RADII.indexOf(prefs.radius) < 0) prefs.radius = 5;
 
-  var state = { center: null, items: [], shown: [], ctrl: null, selected: null, fetched: null, lastJob: null, source: null };
+  var state = { center: null, items: [], shown: [], ctrl: null, selected: null, fetched: null, lastJob: null,
+    source: null, hasOvt: false, matched: 0 };
+  var osmPausedUntil = 0;
 
   /* ---------- utilidades ---------- */
   function esc(s) {
@@ -604,13 +613,18 @@ footer a{color:inherit}
 
   // Overpass es la fuente principal (completa). Si falla o tarda, se consulta Nominatim en paralelo
   // y se usan sus resultados cuando Overpass ha fallado o ya han pasado T_ALT_ACCEPT ms.
-  function findWorkshops(where, km, signal, onFallback) {
+  // opts.noAlt: no usar Nominatim; opts.maxWait: rendirse pasados esos ms (cuando ya hay datos de Overture).
+  function findWorkshops(where, km, signal, onFallback, opts) {
+    opts = opts || {};
     return new Promise(function (resolve, reject) {
       var t0 = Date.now();
       var opCtrl = new AbortController(), altCtrl = new AbortController();
       var opErr = null, alt = null, altErr = null, altStarted = false, done = false;
-      var startT = setTimeout(startAlt, T_ALT_START);
+      var startT = opts.noAlt ? null : setTimeout(startAlt, T_ALT_START);
       var acceptT = setTimeout(check, T_ALT_ACCEPT);
+      var capT = opts.maxWait ? setTimeout(function () {
+        var te = new Error('timeout'); te.timeout = true; finish(reject, te);
+      }, opts.maxWait) : null;
       var onOuter = function () { finish(reject, new Error('abort')); };
       signal.addEventListener('abort', onOuter);
 
@@ -619,6 +633,7 @@ footer a{color:inherit}
         done = true;
         clearTimeout(startT);
         clearTimeout(acceptT);
+        clearTimeout(capT);
         signal.removeEventListener('abort', onOuter);
         opCtrl.abort();
         altCtrl.abort();
@@ -628,10 +643,10 @@ footer a{color:inherit}
         if (done) return;
         var altUsable = alt && (opErr || (alt.length && Date.now() - t0 >= T_ALT_ACCEPT));
         if (altUsable) finish(resolve, { elements: alt, source: 'nominatim' });
-        else if (opErr && altErr) finish(reject, opErr);
+        else if (opErr && (altErr || opts.noAlt)) finish(reject, opErr);
       }
       function startAlt() {
-        if (done || altStarted) return;
+        if (done || altStarted || opts.noAlt) return;
         altStarted = true;
         nominatimPOIs(where, km, altCtrl.signal).then(
           function (els) { alt = els; check(); },
@@ -642,6 +657,54 @@ footer a{color:inherit}
         function (els) { finish(resolve, { elements: els, source: 'overpass' }); },
         function (e) { if (done) return; opErr = e; startAlt(); check(); });
     });
+  }
+
+  /* ---------- Overture Maps: datos estáticos en data/ovt/ (generados con tools/build_overture.py) ---------- */
+  var ovt = { index: null, tiles: {} };
+
+  // Sin la señal de la búsqueda: si se cancela, la descarga sigue y queda en caché para la próxima.
+  function ovtIndex() {
+    if (!ovt.index) {
+      ovt.index = fetchJSON(OVT_BASE + 'index.json', {}, T_OVT).catch(function (e) { ovt.index = null; throw e; });
+    }
+    return ovt.index;
+  }
+  function ovtTile(key) {
+    if (!ovt.tiles[key]) {
+      ovt.tiles[key] = fetchJSON(OVT_BASE + key + '.json', {}, T_OVT).catch(function (e) { delete ovt.tiles[key]; throw e; });
+    }
+    return ovt.tiles[key];
+  }
+
+  // Talleres de Overture dentro del círculo o del rectángulo, en el mismo formato que Overpass.
+  async function overtureFind(where, km, signal) {
+    var idx = await ovtIndex();
+    var T = idx.tile, b = where.bbox;
+    if (!b) {
+      var dLat = km / 111.32, dLon = km / (111.32 * Math.cos(where.lat * Math.PI / 180));
+      b = { s: where.lat - dLat, n: where.lat + dLat, w: where.lon - dLon, e: where.lon + dLon };
+    }
+    var keys = [];
+    for (var i = Math.floor(b.s / T); i <= Math.floor(b.n / T); i++) {
+      for (var j = Math.floor(b.w / T); j <= Math.floor(b.e / T); j++) {
+        if (idx.tiles[i + '_' + j]) keys.push(i + '_' + j);
+      }
+    }
+    var lists = await Promise.all(keys.map(ovtTile));
+    if (signal.aborted) throw new Error('abort');
+    var out = [];
+    lists.forEach(function (recs) {
+      recs.forEach(function (r) {
+        var lat = r[2], lon = r[3];
+        var inside = where.bbox
+          ? lat >= b.s && lat <= b.n && lon >= b.w && lon <= b.e
+          : haversine(where.lat, where.lon, lat, lon) <= km;
+        if (!inside) return;
+        out.push({ type: 'ovt', id: r[0], lat: lat, lon: lon,
+          tags: { name: r[1], phone: r[4], 'addr:full': r[5], website: r[6], _cat: idx.cats[r[7]] || '' } });
+      });
+    });
+    return out;
   }
 
   /* ---------- datos ---------- */
@@ -698,8 +761,11 @@ footer a{color:inherit}
       var email = firstVal(t.email || t['contact:email']);
       items.push({
         id: el.type + '/' + el.id,
+        alt: [],               // ids del mismo taller en la otra fuente (para «visitado»)
         name: name || 'Taller sin nombre',
         noName: !name,
+        norm: name ? normName(name) : '',
+        cat: t._cat || '',
         lat: lat, lon: lon,
         dist: haversine(c.lat, c.lon, lat, lon),
         address: address(t),
@@ -710,31 +776,80 @@ footer a{color:inherit}
       });
     });
     items.sort(function (a, b) { return a.dist - b.dist; });
-    // Ten sam warsztat zmapowany np. jako punkt i budynek -> scal
-    var out = [];
+
+    // El mismo taller puede venir de OSM y de Overture (o dos veces de la misma fuente), a veces con
+    // el punto desplazado (Overture suele situarlo por la dirección): mismo nombre normalizado a menos
+    // de 350 m, o un nombre contenido en el otro a menos de 150 m -> se fusionan.
+    // Rejilla (~400 m) para no comparar todos con todos.
+    var out = [], grid = {}, G = 0.004;
     items.forEach(function (it) {
       var dup = null;
-      if (!it.noName) {
-        for (var i = 0; i < out.length; i++) {
-          var o = out[i];
-          if (!o.noName && o.name.toLowerCase() === it.name.toLowerCase() &&
-              haversine(o.lat, o.lon, it.lat, it.lon) < 0.08) { dup = o; break; }
+      if (it.norm) {
+        var gi = Math.floor(it.lat / G), gj = Math.floor(it.lon / G);
+        for (var a = gi - 1; a <= gi + 1 && !dup; a++) {
+          for (var b = gj - 1; b <= gj + 1 && !dup; b++) {
+            (grid[a + '_' + b] || []).some(function (o) {
+              var m = sameName(o.norm, it.norm);
+              if (!m) return false;
+              var d = haversine(o.lat, o.lon, it.lat, it.lon);
+              if (d < (m === 'exact' && it.norm.length >= 5 ? 0.35 : 0.15)) { dup = o; return true; }
+              return false;
+            });
+          }
         }
       }
-      if (dup) {
-        // Quedarse con el dato más completo de cada campo
-        ['address', 'email', 'web', 'hours'].forEach(function (k) {
-          if ((it[k] || '').length > (dup[k] || '').length) dup[k] = it[k];
-        });
-        var have = dup.phones.map(function (p) { return p.dial.replace(/\D/g, '').slice(-9); });
-        it.phones.forEach(function (p) {
-          if (have.indexOf(p.dial.replace(/\D/g, '').slice(-9)) < 0) dup.phones.push(p);
-        });
-        return;
-      }
+      if (dup) { mergeInto(dup, it); return; }
       out.push(it);
+      if (it.norm) {
+        var key = Math.floor(it.lat / G) + '_' + Math.floor(it.lon / G);
+        (grid[key] = grid[key] || []).push(it);
+      }
     });
+
+    // Si un taller estaba marcado como visitado con el id de la otra fuente, conservarlo.
+    var migrated = false;
+    out.forEach(function (it) {
+      if (visited[it.id]) return;
+      it.alt.some(function (a) {
+        if (visited[a]) { visited[it.id] = visited[a]; migrated = true; return true; }
+        return false;
+      });
+    });
+    if (migrated) save(KEY_VISITED, visited);
     return out;
+  }
+
+  var NAME_STOP = { taller: 1, talleres: 1, automoviles: 1, automocion: 1, sl: 1, slu: 1, sa: 1, cb: 1, sc: 1,
+    y: 1, de: 1, del: 1, la: 1, el: 1, los: 1, las: 1 };
+  function normName(s) {
+    return String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ').split(' ')
+      .filter(function (w) { return w.length > 1 && !NAME_STOP[w]; }).join(' '); // «S.L.» -> «s», «l»: fuera
+  }
+  // 'exact' si los nombres normalizados coinciden, 'part' si uno contiene al otro, false si no.
+  function sameName(x, y) {
+    if (!x || !y) return false;
+    if (x === y) return 'exact';
+    return ((x.length >= 4 && y.indexOf(x) >= 0) || (y.length >= 4 && x.indexOf(y) >= 0)) ? 'part' : false;
+  }
+
+  // Fusiona «it» en «dup»: el dato más completo de cada campo, teléfonos sin repetir.
+  // El id principal será el de Overture (siempre disponible); el de OSM queda en «alt».
+  function mergeInto(dup, it) {
+    ['address', 'email', 'web', 'hours', 'cat'].forEach(function (k) {
+      if ((it[k] || '').length > (dup[k] || '').length) dup[k] = it[k];
+    });
+    var have = dup.phones.map(function (p) { return p.dial.replace(/\D/g, '').slice(-9); });
+    it.phones.forEach(function (p) {
+      if (have.indexOf(p.dial.replace(/\D/g, '').slice(-9)) < 0) dup.phones.push(p);
+    });
+    if (it.id.indexOf('ovt/') === 0 && dup.id.indexOf('ovt/') !== 0) {
+      dup.alt.push(dup.id);
+      dup.id = it.id;
+    } else {
+      dup.alt.push(it.id);
+    }
+    dup.alt = dup.alt.concat(it.alt);
   }
 
   function webHref(w) { return /^https?:\/\//i.test(w) ? w : 'https://' + w; }
@@ -742,7 +857,11 @@ footer a{color:inherit}
   function coords(it) { return it.lat.toFixed(6) + '%2C' + it.lon.toFixed(6); }
   function gmaps(it) { return 'https://www.google.com/maps/search/?api=1&query=' + coords(it); }
   function gdir(it) { return 'https://www.google.com/maps/dir/?api=1&destination=' + coords(it); }
-  function osmUrl(it) { return 'https://www.openstreetmap.org/' + it.id; }
+  // Enlace al objeto de OpenStreetMap (si el taller está en OSM).
+  function osmUrl(it) {
+    var id = [it.id].concat(it.alt || []).filter(function (x) { return x.indexOf('ovt/') !== 0; })[0];
+    return id ? 'https://www.openstreetmap.org/' + id : '';
+  }
 
   // Búsqueda «taller mecánico» en Google Maps alrededor del centro, con un zoom acorde al radio.
   var RADIUS_ZOOM = { 1: 15, 3: 14, 5: 13, 10: 12, 20: 11 };
@@ -960,7 +1079,7 @@ footer a{color:inherit}
     h += '<div class="head">';
     h += '<button class="num" type="button" data-act="locate" aria-label="Ver ' + n + ' en el mapa">' + n + '</button>';
     h += '<div class="title"><h2' + (it.noName ? ' class="noname"' : '') + '>' + esc(it.name) + '</h2>';
-    h += '<div class="meta">' + fmtKm(it.dist) + '</div></div>';
+    h += '<div class="meta">' + fmtKm(it.dist) + (it.cat ? ' · ' + esc(it.cat) : '') + '</div></div>';
     h += '<label class="visit"><input type="checkbox" data-act="visit"' + (v ? ' checked' : '') + '>Visitado</label>';
     h += '</div>';
     if (it.address) h += '<div class="addr">' + esc(it.address) + '</div>';
@@ -982,12 +1101,15 @@ footer a{color:inherit}
   }
 
   function render(fit) {
-    var list = state.items.filter(function (it) { return !prefs.phoneOnly || it.phones.length; });
+    var matched = state.items.filter(function (it) { return !prefs.phoneOnly || it.phones.length; });
+    // En ciudades grandes puede haber miles: lista y mapa con los más cercanos (ya vienen ordenados).
+    var list = matched.slice(0, MAX_SHOWN);
+    state.matched = matched.length;
     state.shown = list;
     if (!state.center) {
       els.list.innerHTML = '<li class="empty">Escribe una calle y número, ciudad o código postal, pulsa «📍 Mi ubicación», o elige un punto o una zona en el mapa.</li>';
     } else if (!state.items.length) {
-      els.list.innerHTML = '<li class="empty">No hay talleres registrados en OpenStreetMap ' + esc(whereText(state.center)) + '. ' +
+      els.list.innerHTML = '<li class="empty">No hay talleres registrados ' + esc(whereText(state.center)) + '. ' +
         (state.center.bbox ? 'Prueba con una zona mayor.' : 'Prueba con un radio mayor.') + '</li>';
     } else if (!list.length) {
       els.list.innerHTML = '<li class="empty">Ningún taller con teléfono en esta búsqueda. Desactiva «Solo con teléfono» o busca en una zona mayor.</li>';
@@ -1021,8 +1143,13 @@ footer a{color:inherit}
     var s = total + (total === 1 ? ' taller ' : ' talleres ') + whereText(state.center) +
       ' · ' + withTel + ' con teléfono';
     if (vis) s += ' · ' + vis + (vis === 1 ? ' visitado' : ' visitados');
-    if (prefs.phoneOnly && state.shown.length !== total) s += ' · mostrando ' + state.shown.length;
-    if (state.source === 'nominatim') s += ' · búsqueda alternativa';
+    if (state.shown.length < state.matched) s += ' · se muestran los ' + state.shown.length + ' más cercanos';
+    else if (prefs.phoneOnly && state.shown.length !== total) s += ' · mostrando ' + state.shown.length;
+    var src = [];
+    if (state.hasOvt) src.push('Overture');
+    if (state.source === 'overpass') src.push('OSM');
+    if (state.source === 'nominatim') src.push('OSM parcial');
+    if (src.length) s += ' · fuentes: ' + src.join(' + ');
     els.summary.textContent = s;
   }
 
@@ -1084,21 +1211,46 @@ footer a{color:inherit}
       var c = await job.getCenter(signal);
       if (signal.aborted) return;
       setStatus('Buscando talleres ' + whereText(c, radius) + '…', 'busy');
-      var res = await findWorkshops(c, radius, signal, function () {
-        if (!signal.aborted) setStatus('Buscando talleres ' + whereText(c, radius) + ' (probando servidor alternativo)…', 'busy');
-      });
+
+      // 1) Overture: ficheros estáticos, rápido y con la mayoría de talleres.
+      var ovtEls = [];
+      try {
+        ovtEls = await overtureFind(c, radius, signal);
+      } catch (e) {
+        if (signal.aborted) return;
+        if (window.console) console.warn('Overture no disponible', e);
+      }
       if (signal.aborted) return;
-      var items = toItems(res.elements, c).filter(function (it) {
+      var hasOvt = ovtEls.length > 0;
+
+      // 2) OpenStreetMap: complementa (horarios, email, talleres que Overture no tiene).
+      //    Si ya hay datos de Overture, no se espera más de T_OSM_WITH_OVT ni se usa Nominatim.
+      var res = { elements: [], source: null };
+      if (!(hasOvt && Date.now() < osmPausedUntil)) {
+        try {
+          res = await findWorkshops(c, radius, signal, function () {
+            if (!signal.aborted && !hasOvt) setStatus('Buscando talleres ' + whereText(c, radius) + ' (probando servidor alternativo)…', 'busy');
+          }, hasOvt ? { noAlt: true, maxWait: T_OSM_WITH_OVT } : null);
+        } catch (e) {
+          if (signal.aborted) return;
+          if (!hasOvt) throw e;            // sin ningún dato: mostrar el error
+          osmPausedUntil = Date.now() + OSM_PAUSE;
+        }
+      }
+      if (signal.aborted) return;
+
+      var items = toItems(ovtEls.concat(res.elements), c).filter(function (it) {
         // Nominatim busca en un cuadrado: quitar las esquinas fuera del radio.
-        return res.source !== 'nominatim' || c.bbox || it.dist <= radius;
+        return c.bbox || it.dist <= radius + 0.05;
       });
       state.center = c;
       state.source = res.source;
+      state.hasOvt = hasOvt;
       state.fetched = { center: c, radius: c.bbox ? null : radius, items: items };
       state.items = items;
       state.selected = null;
       drawCenter();
-      if (res.source === 'nominatim') {
+      if (res.source === 'nominatim' && !hasOvt) {
         setStatus('Los servidores de mapas están saturados: resultados de la búsqueda alternativa. Puede faltar algún taller.',
           'warn', function () { run(job); });
       } else {
@@ -1140,10 +1292,10 @@ footer a{color:inherit}
   function exportCSV() {
     var list = state.shown;
     if (!list.length) return;
-    var rows = [['Nº', 'Nombre', 'Distancia (km)', 'Dirección', 'Teléfono', 'Email', 'Web', 'Horario', 'Visitado', 'Google Maps', 'OpenStreetMap']];
+    var rows = [['Nº', 'Nombre', 'Tipo', 'Distancia (km)', 'Dirección', 'Teléfono', 'Email', 'Web', 'Horario', 'Visitado', 'Google Maps', 'OpenStreetMap']];
     list.forEach(function (it, i) {
       rows.push([
-        i + 1, it.name, kmNum(it.dist), it.address,
+        i + 1, it.name, it.cat, kmNum(it.dist), it.address,
         it.phones.map(function (p) { return p.label; }).join(' / '),
         it.email, it.web, it.hours, visited[it.id] ? 'Sí' : 'No', gmaps(it), osmUrl(it)
       ]);
@@ -1276,7 +1428,13 @@ footer a{color:inherit}
     if (!cb) return;
     var li = cb.closest('.card');
     var id = li.dataset.id;
-    if (cb.checked) visited[id] = Date.now(); else delete visited[id];
+    var it = state.shown.filter(function (x) { return x.id === id; })[0];
+    if (cb.checked) {
+      visited[id] = Date.now();
+    } else {
+      delete visited[id];
+      if (it) it.alt.forEach(function (a) { delete visited[a]; }); // también el id de la otra fuente
+    }
     save(KEY_VISITED, visited);
     li.classList.toggle('visited', cb.checked);
     refreshMarker(id);
@@ -1297,6 +1455,11 @@ footer a{color:inherit}
   els.copyBtn.addEventListener('click', copyList);
 
   /* ---------- inicio ---------- */
+  // Precargar el índice de Overture (pocos KB) y mostrar su versión en el pie.
+  ovtIndex().then(function (idx) {
+    var s = $('#ovtRelease');
+    if (s && idx && idx.release) s.textContent = String(idx.release).slice(0, 7);
+  }, function () { /* sin Overture la app sigue funcionando con OSM */ });
   els.q.value = prefs.q || '';
   els.phoneOnly.checked = !!prefs.phoneOnly;
   updateRadiusUI();
