@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b5cab">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Talleres">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="Talleres mecánicos cercanos con datos de OpenStreetMap.">
+<title>Talleres cerca</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%A7%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous">
+<style>
+:root{
+  --bg:#eef2f6; --card:#fff; --text:#15202b; --muted:#5b6876; --line:#d9e0e7;
+  --accent:#0b5cab; --accent-soft:#e3eefb; --accent-ink:#fff;
+  --tel:#1a7f37; --tel-ink:#fff; --err-bg:#fdecea; --err:#b3261e; --visited:#98a2ad;
+  --shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.05);
+  color-scheme:light dark;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0e1319; --card:#18212b; --text:#e6edf3; --muted:#98a6b4; --line:#2a3644;
+    --accent:#4f9cff; --accent-soft:#13253a; --accent-ink:#06121f;
+    --tel:#238636; --tel-ink:#fff; --err-bg:#3a1714; --err:#ffb4ab; --visited:#5d6873;
+    --shadow:none;
+  }
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-tap-highlight-color:transparent;
+  padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.wrap{max-width:760px;margin:0 auto;padding:0 12px}
+header{padding:calc(env(safe-area-inset-top) + 12px) 0 8px}
+h1{font-size:21px;margin:0 0 10px;letter-spacing:-.2px}
+h1 small{font-size:13px;font-weight:500;color:var(--muted);margin-left:6px;letter-spacing:0}
+form{display:flex;gap:8px}
+input[type=search]{
+  flex:1;min-width:0;font:inherit;font-size:16px;padding:10px 12px;min-height:44px;
+  border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);
+  -webkit-appearance:none;appearance:none;
+}
+input[type=search]:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.btn{
+  font:inherit;font-weight:600;border-radius:12px;padding:10px 14px;min-height:44px;
+  background:var(--card);color:var(--text);border:1px solid var(--line);cursor:pointer;white-space:nowrap;
+}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn:not(:disabled):active{transform:translateY(1px)}
+.row2{display:flex;gap:8px;margin-top:8px;align-items:stretch}
+.geo{flex:0 0 auto;padding:10px 12px}
+.radius{
+  display:flex;flex:1;min-width:0;align-items:center;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;padding:3px;gap:2px;
+}
+.radius button{
+  flex:1;min-width:0;font:inherit;font-size:15px;font-weight:600;border:0;background:transparent;
+  color:var(--muted);border-radius:9px;min-height:36px;padding:0;cursor:pointer;
+}
+.radius button[aria-checked=true]{background:var(--accent);color:var(--accent-ink)}
+.radius .unit{font-size:13px;color:var(--muted);padding:0 6px 0 2px}
+.status{
+  margin:4px 0 8px;padding:10px 12px;border-radius:12px;background:var(--accent-soft);
+  font-size:15px;display:flex;align-items:center;gap:10px;
+}
+.status.error{background:var(--err-bg);color:var(--err)}
+.status .msg{flex:1;min-width:0}
+.status .secs{flex:0 0 auto;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.status .retry{flex:0 0 auto;color:var(--err);border-color:currentColor;background:transparent}
+.spinner{
+  width:18px;height:18px;flex:0 0 auto;border:2.5px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:spin .8s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+#map{
+  height:42vh;min-height:240px;max-height:480px;border-radius:14px;overflow:hidden;
+  border:1px solid var(--line);background:#dfe6ec;isolation:isolate;
+}
+#map .empty{padding-top:90px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px}
+.toggle{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;min-height:44px;cursor:pointer;user-select:none;-webkit-user-select:none}
+.toggle input{width:22px;height:22px;margin:0;accent-color:var(--accent)}
+.actions{display:flex;gap:8px;margin-left:auto}
+.btn.small{padding:8px 12px;min-height:40px;font-size:14px}
+@media (max-width:520px){
+  .actions{width:100%;margin-left:0}
+  .actions .btn{flex:1}
+}
+.summary{color:var(--muted);font-size:14px;margin:2px 0 10px}
+ol.list{list-style:none;margin:0;padding:0 0 16px;display:flex;flex-direction:column;gap:10px}
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;
+  box-shadow:var(--shadow);transition:box-shadow .3s,opacity .2s;
+}
+.card.flash{box-shadow:0 0 0 3px #f59e0b}
+.head{display:flex;gap:10px;align-items:flex-start}
+.num{
+  flex:0 0 auto;width:36px;height:36px;border-radius:50%;background:var(--accent);color:#fff;
+  font:700 14px/1 inherit;border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;
+}
+.title{flex:1;min-width:0}
+.title h2{font-size:17px;margin:0;line-height:1.25;overflow-wrap:anywhere}
+.title h2.noname{font-style:italic;color:var(--muted);font-weight:600}
+.meta{font-size:13px;color:var(--muted);margin-top:3px;font-weight:600}
+.visit{
+  display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11px;color:var(--muted);
+  cursor:pointer;flex:0 0 auto;user-select:none;-webkit-user-select:none;padding:0 2px;
+}
+.visit input{width:24px;height:24px;margin:0;accent-color:var(--visited)}
+.addr{margin-top:8px;font-size:15px}
+.tels{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tel{
+  display:inline-flex;align-items:center;gap:6px;background:var(--tel);color:var(--tel-ink);
+  text-decoration:none;font-weight:600;padding:8px 12px;border-radius:10px;font-size:15px;min-height:40px;
+}
+.info{margin-top:8px;font-size:14px;display:grid;gap:5px}
+.info div{display:flex;gap:7px;min-width:0}
+.info div > :last-child{overflow-wrap:anywhere;min-width:0}
+.info a{color:var(--accent)}
+.links{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.links a{
+  font-size:14px;font-weight:600;color:var(--accent);text-decoration:none;padding:7px 10px;
+  border:1px solid var(--line);border-radius:10px;min-height:36px;display:inline-flex;align-items:center;
+}
+.card.visited{opacity:.62;filter:grayscale(1)}
+.card.visited .num{background:var(--visited)}
+.empty{text-align:center;color:var(--muted);padding:26px 16px;font-size:15px}
+footer{color:var(--muted);font-size:12px;text-align:center;padding:6px 0 28px;line-height:1.5}
+footer a{color:inherit}
+.toast{
+  position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));
+  transform:translate(-50%,20px);background:#1f2933;color:#fff;padding:10px 16px;border-radius:999px;
+  font-size:15px;opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;z-index:1000;max-width:90vw;
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+/* Pinezki na mapie */
+.pin-wrap{background:none;border:0}
+.pin{
+  width:30px;height:30px;border-radius:50% 50% 50% 0;background:#0b5cab;transform:rotate(-45deg);
+  border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;
+}
+.pin b{transform:rotate(45deg);color:#fff;font:700 12px/1 -apple-system,system-ui,sans-serif;letter-spacing:-.3px}
+.pin.v{background:#9aa4ae}
+.pin.sel{background:#f59e0b}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span aria-hidden="true">🔧</span> Talleres cerca <small>OpenStreetMap</small></h1>
+    <form id="searchForm" role="search" autocomplete="off">
+      <input id="q" type="search" enterkeyhint="search" placeholder="Ciudad, dirección o código postal" aria-label="Lugar" autocapitalize="words" autocorrect="off" spellcheck="false">
+      <button id="searchBtn" class="btn primary" type="submit">Buscar</button>
+    </form>
+    <div class="row2">
+      <button id="geoBtn" class="btn geo" type="button">📍 Mi ubicación</button>
+      <div class="radius" id="radius" role="radiogroup" aria-label="Radio de búsqueda en km">
+        <button type="button" role="radio" data-r="1">1</button>
+        <button type="button" role="radio" data-r="3">3</button>
+        <button type="button" role="radio" data-r="5">5</button>
+        <button type="button" role="radio" data-r="10">10</button>
+        <button type="button" role="radio" data-r="20">20</button>
+        <span class="unit">km</span>
+      </div>
+    </div>
+  </header>
+
+  <div id="status" class="status" role="status" aria-live="polite" hidden></div>
+  <div id="map" aria-label="Mapa de talleres"></div>
+
+  <div class="toolbar">
+    <label class="toggle"><input type="checkbox" id="phoneOnly"> Solo con teléfono</label>
+    <div class="actions">
+      <button id="csvBtn" class="btn small" type="button" disabled>⬇️ Exportar CSV</button>
+      <button id="copyBtn" class="btn small" type="button" disabled>📋 Copiar lista</button>
+    </div>
+  </div>
+  <div id="summary" class="summary"></div>
+  <ol id="list" class="list"></ol>
+  <noscript><p class="empty">Esta aplicación necesita JavaScript.</p></noscript>
+
+  <footer>
+    Datos: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a> (ODbL)
+    · Búsqueda: Nominatim · Consultas: Overpass API<br>
+    Solo aparecen los talleres registrados en OpenStreetMap; puede haber datos incompletos.
+  </footer>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous"></script>
+<script>
+(function () {
+  'use strict';
+
+  // [0] = servidor principal; el resto, servidores de reserva por orden.
+  var OVERPASS_ENDPOINTS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter'
+  ];
+  var NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+  var RADII = [1, 3, 5, 10, 20];
+  var KEY_VISITED = 'talleresCerca.visitados';
+  var KEY_PREFS = 'talleresCerca.prefs';
+  var T_GEO = 15000, T_NOMINATIM = 15000;
+  var T_OVERPASS = 30000;        // máx. por petición
+  var T_OVERPASS_TOTAL = 50000;  // máx. total de la búsqueda de talleres
+  var T_HEDGE = 7000;            // si el principal tarda más, se consulta también la reserva
+
+  function $(s) { return document.querySelector(s); }
+  var els = {
+    form: $('#searchForm'), q: $('#q'), geoBtn: $('#geoBtn'), radius: $('#radius'),
+    status: $('#status'), map: $('#map'), phoneOnly: $('#phoneOnly'), csvBtn: $('#csvBtn'),
+    copyBtn: $('#copyBtn'), summary: $('#summary'), list: $('#list'), toast: $('#toast')
+  };
+
+  /* ---------- localStorage (zawsze w try/catch) ---------- */
+  function load(key, def) {
+    try {
+      var v = localStorage.getItem(key);
+      if (v == null) return def;
+      var p = JSON.parse(v);
+      return (p && typeof p === 'object' && !Array.isArray(p)) ? p : def;
+    } catch (e) { return def; }
+  }
+  function save(key, val) {
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { /* modo privado / bloqueado */ }
+  }
+
+  var visited = load(KEY_VISITED, {});
+  var prefs = Object.assign({ radius: 5, phoneOnly: false, q: '' }, load(KEY_PREFS, {}));
+  if (RADII.indexOf(prefs.radius) < 0) prefs.radius = 5;
+
+  var state = { center: null, items: [], shown: [], ctrl: null, selected: null, fetched: null, lastJob: null };
+
+  /* ---------- utilidades ---------- */
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function userError(msg) { var e = new Error(msg); e.user = true; return e; }
+  function haversine(lat1, lon1, lat2, lon2) {
+    var R = 6371, r = Math.PI / 180;
+    var dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+    var a = Math.pow(Math.sin(dLat / 2), 2) +
+      Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.pow(Math.sin(dLon / 2), 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+  }
+  function kmNum(d) { return d.toFixed(1).replace('.', ','); }
+  function fmtKm(d) { return kmNum(d) + ' km'; }
+
+  async function fetchJSON(url, opts, ms, outer) {
+    var ctrl = new AbortController();
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms);
+    var onOuter = function () { ctrl.abort(); };
+    if (outer) { if (outer.aborted) ctrl.abort(); else outer.addEventListener('abort', onOuter); }
+    try {
+      var r = await fetch(url, Object.assign({}, opts, { signal: ctrl.signal }));
+      if (!r.ok) { var he = new Error('HTTP ' + r.status); he.status = r.status; throw he; }
+      return await r.json();
+    } catch (e) {
+      if (timedOut) { var te = new Error('timeout'); te.timeout = true; throw te; }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (outer) outer.removeEventListener('abort', onOuter);
+    }
+  }
+
+  /* ---------- ubicación ---------- */
+  function getPosition() {
+    return new Promise(function (resolve, reject) {
+      if (!('geolocation' in navigator)) {
+        reject(userError('Este navegador no permite obtener la ubicación. Busca por nombre.'));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(function (p) {
+        resolve({ lat: p.coords.latitude, lon: p.coords.longitude, label: 'tu ubicación', mine: true });
+      }, function (err) {
+        var msg = 'No se pudo obtener tu ubicación. Busca por nombre.';
+        if (err && err.code === 1) msg = 'Permiso de ubicación denegado. Actívalo en Ajustes › Privacidad y seguridad › Localización › Sitios web de Safari, o busca por nombre.';
+        else if (err && err.code === 3) msg = 'Se agotó el tiempo para obtener tu ubicación. Inténtalo de nuevo o busca por nombre.';
+        reject(userError(msg));
+      }, { enableHighAccuracy: true, timeout: T_GEO, maximumAge: 60000 });
+    });
+  }
+
+  function placeLabel(d) {
+    var a = d.address || {};
+    var city = a.city || a.town || a.village || a.municipality || a.county || '';
+    var name = d.name || String(d.display_name || '').split(',')[0].trim();
+    if (!name) return city || 'el lugar buscado';
+    return (city && city !== name) ? name + ', ' + city : name;
+  }
+
+  async function geocode(q, signal) {
+    var params = new URLSearchParams({
+      q: q, format: 'jsonv2', countrycodes: 'es', limit: '1', addressdetails: '1', 'accept-language': 'es'
+    });
+    var data;
+    try {
+      data = await fetchJSON(NOMINATIM + '?' + params.toString(), {}, T_NOMINATIM, signal);
+    } catch (e) {
+      if (signal.aborted) throw e;
+      throw userError(e.timeout
+        ? 'El buscador de lugares no responde. Inténtalo de nuevo.'
+        : 'No se pudo buscar el lugar (sin conexión o servicio no disponible).');
+    }
+    if (!Array.isArray(data) || !data.length) {
+      throw userError('No se encontró «' + q + '» en España. Prueba con otro nombre o un código postal.');
+    }
+    var d = data[0];
+    return { lat: parseFloat(d.lat), lon: parseFloat(d.lon), label: placeLabel(d), mine: false };
+  }
+
+  /* ---------- Overpass ---------- */
+  function buildQuery(lat, lon, km) {
+    var a = 'around:' + Math.round(km * 1000) + ',' + lat.toFixed(6) + ',' + lon.toFixed(6);
+    return '[out:json][timeout:25];(' +
+      'nwr(' + a + ')["shop"="car_repair"];' +
+      'nwr(' + a + ')["craft"="car_repair"];' +
+      'nwr(' + a + ')["amenity"="car_repair"];' +
+      ');out center tags;';
+  }
+
+  function sleep(ms, signal) {
+    return new Promise(function (resolve, reject) {
+      if (signal.aborted) { reject(new Error('abort')); return; }
+      var t = setTimeout(function () { signal.removeEventListener('abort', onAbort); resolve(); }, ms);
+      function onAbort() { clearTimeout(t); reject(new Error('abort')); }
+      signal.addEventListener('abort', onAbort);
+    });
+  }
+
+  // Equivalente a Promise.any: la primera que se cumpla; si fallan todas, rechaza con la lista de errores.
+  function firstSuccess(promises) {
+    return new Promise(function (resolve, reject) {
+      var left = promises.length, errs = [];
+      promises.forEach(function (p, i) {
+        p.then(resolve, function (e) { errs[i] = e; if (--left === 0) reject(errs); });
+      });
+    });
+  }
+
+  function isBusy(e) { return e && (e.status === 429 || e.status === 502 || e.status === 503 || e.status === 504); }
+
+  // Servidor principal con reintentos (si está saturado responde enseguida con 429/502/504)
+  // y, en paralelo, servidores de reserva en cuanto el principal falla o tarda más de T_HEDGE.
+  // Gana la primera respuesta válida; las demás peticiones se cancelan.
+  function overpass(lat, lon, km, signal, onFallback) {
+    var body = 'data=' + encodeURIComponent(buildQuery(lat, lon, km));
+    var ctrl = new AbortController();
+    var onOuter = function () { ctrl.abort(); };
+    signal.addEventListener('abort', onOuter);
+    var deadline = Date.now() + T_OVERPASS_TOTAL;
+
+    function attempt(ep) {
+      var left = deadline - Date.now();
+      if (left < 2000) { var te = new Error('timeout'); te.timeout = true; return Promise.reject(te); }
+      return fetchJSON(ep, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body
+      }, Math.min(T_OVERPASS, left), ctrl.signal).then(function (j) {
+        if (!j || !Array.isArray(j.elements)) throw new Error('Respuesta no válida');
+        if (j.remark && /error|timed out|timeout/i.test(j.remark) && !j.elements.length) throw new Error(j.remark);
+        return j.elements;
+      });
+    }
+
+    var startFallback;
+    var gate = new Promise(function (r) { startFallback = r; });
+    var hedge = setTimeout(function () { startFallback(); }, T_HEDGE);
+
+    var primary = (async function () {
+      var waits = [0, 3000, 6000, 10000], err;
+      for (var i = 0; i < waits.length; i++) {
+        if (waits[i]) await sleep(waits[i], ctrl.signal);
+        try { return await attempt(OVERPASS_ENDPOINTS[0]); }
+        catch (e) {
+          if (ctrl.signal.aborted) throw e;
+          err = e;
+          startFallback();
+          if (!isBusy(e)) break; // solo se reintenta si el servidor dice que está saturado
+        }
+      }
+      throw err;
+    })();
+
+    var fallback = gate.then(async function () {
+      if (ctrl.signal.aborted) throw new Error('abort');
+      if (onFallback) onFallback();
+      var err;
+      for (var k = 1; k < OVERPASS_ENDPOINTS.length; k++) {
+        try { return await attempt(OVERPASS_ENDPOINTS[k]); }
+        catch (e) { if (ctrl.signal.aborted) throw e; err = e; }
+      }
+      throw err;
+    });
+
+    function cleanup() {
+      clearTimeout(hedge);
+      signal.removeEventListener('abort', onOuter);
+      ctrl.abort(); // cancela las peticiones que sigan abiertas
+    }
+
+    return firstSuccess([primary, fallback]).then(function (elements) {
+      cleanup();
+      return elements;
+    }, function (errs) {
+      cleanup();
+      if (signal.aborted) throw new Error('abort');
+      if (errs.some(isBusy)) throw userError('Los servidores de OpenStreetMap están saturados ahora mismo. Inténtalo de nuevo en un minuto.');
+      if (errs.every(function (e) { return e && e.timeout; })) throw userError('Los servidores de OpenStreetMap tardan demasiado. Prueba con un radio menor o inténtalo más tarde.');
+      throw userError('No se pudo conectar con los servidores de OpenStreetMap. Revisa la conexión e inténtalo de nuevo.');
+    });
+  }
+
+  /* ---------- datos ---------- */
+  function address(t) {
+    if (t['addr:full']) return String(t['addr:full']).trim();
+    var street = t['addr:street'] || t['addr:place'] || '';
+    var num = t['addr:housenumber'] || '';
+    var line1 = street ? (num ? street + ', ' + num : street) : '';
+    var city = t['addr:city'] || t['addr:town'] || t['addr:village'] || t['addr:municipality'] || '';
+    var line2 = [t['addr:postcode'], city].filter(Boolean).join(' ');
+    return [line1, line2].filter(Boolean).join(', ');
+  }
+
+  // Número español (9 cifras, empieza por 6-9, con o sin +34/0034) -> 9 cifras; si no, null.
+  function spanishNumber(label, digits) {
+    var m = digits.match(/^(?:0034|34)?([6789]\d{8})$/);
+    return (m && (digits.length === 9 || /^\s*(\+|00)?34/.test(label))) ? m[1] : null;
+  }
+
+  function phones(t) {
+    var raw = [t.phone, t['contact:phone'], t['contact:mobile'], t.mobile].filter(Boolean).join(';');
+    var out = [], seen = {};
+    raw.split(/[;,\/]/).forEach(function (p) {
+      p = p.trim();
+      var digits = p.replace(/\D/g, '');
+      if (digits.length < 6) return;
+      var key = digits.replace(/^(0034|34)(?=\d{9}$)/, '');
+      if (seen[key]) return;
+      seen[key] = 1;
+      var es = spanishNumber(p, digits);
+      if (es) {
+        // Siempre en formato internacional: funciona también con una SIM extranjera en roaming.
+        out.push({ label: '+34 ' + es.slice(0, 3) + ' ' + es.slice(3, 6) + ' ' + es.slice(6), dial: '+34' + es });
+        return;
+      }
+      var dial = p.replace(/[^\d+]/g, '');
+      if (dial.indexOf('+') > 0) dial = dial.replace(/\+/g, '');
+      if (/^00\d/.test(dial)) dial = '+' + dial.slice(2);
+      out.push({ label: p, dial: dial });
+    });
+    return out;
+  }
+
+  function firstVal(v) { return String(v || '').split(';')[0].trim(); }
+
+  function toItems(elements, c) {
+    var items = [];
+    elements.forEach(function (el) {
+      var lat = el.lat != null ? el.lat : (el.center ? el.center.lat : null);
+      var lon = el.lon != null ? el.lon : (el.center ? el.center.lon : null);
+      if (lat == null || lon == null) return;
+      var t = el.tags || {};
+      var name = String(t.name || t.brand || t.operator || '').trim();
+      var email = firstVal(t.email || t['contact:email']);
+      items.push({
+        id: el.type + '/' + el.id,
+        name: name || 'Taller sin nombre',
+        noName: !name,
+        lat: lat, lon: lon,
+        dist: haversine(c.lat, c.lon, lat, lon),
+        address: address(t),
+        phones: phones(t),
+        email: email.indexOf('@') > 0 ? email : '',
+        web: firstVal(t.website || t['contact:website'] || t.url),
+        hours: String(t.opening_hours || '').trim()
+      });
+    });
+    items.sort(function (a, b) { return a.dist - b.dist; });
+    // Ten sam warsztat zmapowany np. jako punkt i budynek -> scal
+    var out = [];
+    items.forEach(function (it) {
+      var dup = null;
+      if (!it.noName) {
+        for (var i = 0; i < out.length; i++) {
+          var o = out[i];
+          if (!o.noName && o.name.toLowerCase() === it.name.toLowerCase() &&
+              haversine(o.lat, o.lon, it.lat, it.lon) < 0.08) { dup = o; break; }
+        }
+      }
+      if (dup) {
+        // Quedarse con el dato más completo de cada campo
+        ['address', 'email', 'web', 'hours'].forEach(function (k) {
+          if ((it[k] || '').length > (dup[k] || '').length) dup[k] = it[k];
+        });
+        var have = dup.phones.map(function (p) { return p.dial.replace(/\D/g, '').slice(-9); });
+        it.phones.forEach(function (p) {
+          if (have.indexOf(p.dial.replace(/\D/g, '').slice(-9)) < 0) dup.phones.push(p);
+        });
+        return;
+      }
+      out.push(it);
+    });
+    return out;
+  }
+
+  function webHref(w) { return /^https?:\/\//i.test(w) ? w : 'https://' + w; }
+  function webLabel(w) { return w.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, ''); }
+  function coords(it) { return it.lat.toFixed(6) + '%2C' + it.lon.toFixed(6); }
+  function gmaps(it) { return 'https://www.google.com/maps/search/?api=1&query=' + coords(it); }
+  function gdir(it) { return 'https://www.google.com/maps/dir/?api=1&destination=' + coords(it); }
+  function osmUrl(it) { return 'https://www.openstreetmap.org/' + it.id; }
+
+  /* ---------- mapa ---------- */
+  var map = null, pinLayer = null, centerLayer = null, markers = {};
+
+  function initMap() {
+    if (typeof L === 'undefined') {
+      els.map.innerHTML = '<div class="empty">No se pudo cargar el mapa. La lista funciona igualmente.</div>';
+      return;
+    }
+    map = L.map(els.map, { zoomControl: true }).setView([40.2, -3.7], 5);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(map);
+    centerLayer = L.layerGroup().addTo(map);
+    pinLayer = L.layerGroup().addTo(map);
+  }
+
+  function pinIcon(n, isVisited, isSel) {
+    return L.divIcon({
+      className: 'pin-wrap',
+      html: '<div class="pin' + (isVisited ? ' v' : '') + (isSel ? ' sel' : '') + '"><b>' + n + '</b></div>',
+      iconSize: [30, 30],
+      iconAnchor: [15, 36]
+    });
+  }
+
+  function zFor(id) { return state.selected === id ? 1000 : (visited[id] ? -1000 : 0); }
+
+  function drawCenter() {
+    if (!map) return;
+    centerLayer.clearLayers();
+    var c = state.center;
+    L.circle([c.lat, c.lon], {
+      radius: prefs.radius * 1000, color: '#e53935', weight: 1.5, opacity: 0.6, dashArray: '6 6',
+      fillColor: '#e53935', fillOpacity: 0.04, interactive: false
+    }).addTo(centerLayer);
+    L.circleMarker([c.lat, c.lon], {
+      radius: 8, color: '#fff', weight: 3, fillColor: '#e53935', fillOpacity: 1
+    }).bindTooltip(c.mine ? 'Mi ubicación' : esc(c.label)).addTo(centerLayer);
+  }
+
+  function drawMarkers(list, fit) {
+    if (!map) return;
+    pinLayer.clearLayers();
+    markers = {};
+    list.forEach(function (it, i) {
+      var n = i + 1;
+      var m = L.marker([it.lat, it.lon], {
+        icon: pinIcon(n, !!visited[it.id], state.selected === it.id),
+        zIndexOffset: zFor(it.id),
+        title: n + '. ' + it.name
+      });
+      m.on('click', function () { select(it.id); scrollToCard(it.id); });
+      m.addTo(pinLayer);
+      markers[it.id] = { m: m, n: n };
+    });
+    if (fit) fitAll(list);
+  }
+
+  function fitAll(list) {
+    if (!map || !state.center) return;
+    var c = state.center;
+    if (!list.length) {
+      map.fitBounds(L.latLng(c.lat, c.lon).toBounds(prefs.radius * 2000));
+      return;
+    }
+    var pts = list.map(function (it) { return [it.lat, it.lon]; });
+    pts.push([c.lat, c.lon]);
+    map.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 16 });
+  }
+
+  function refreshMarker(id) {
+    var rec = markers[id];
+    if (!rec) return;
+    rec.m.setIcon(pinIcon(rec.n, !!visited[id], state.selected === id));
+    rec.m.setZIndexOffset(zFor(id));
+  }
+
+  function select(id) {
+    var prev = state.selected;
+    state.selected = id;
+    if (prev && prev !== id) refreshMarker(prev);
+    refreshMarker(id);
+  }
+
+  function scrollToCard(id) {
+    var idx = state.shown.findIndex(function (it) { return it.id === id; });
+    var li = idx >= 0 ? els.list.children[idx] : null;
+    if (!li) return;
+    li.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    li.classList.remove('flash');
+    void li.offsetWidth;
+    li.classList.add('flash');
+    clearTimeout(li._flashT);
+    li._flashT = setTimeout(function () { li.classList.remove('flash'); }, 1800);
+  }
+
+  function focusOnMap(id) {
+    var rec = markers[id];
+    if (!map || !rec) return;
+    select(id);
+    els.map.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    map.setView(rec.m.getLatLng(), Math.max(map.getZoom(), 16), { animate: true });
+  }
+
+  /* ---------- lista ---------- */
+  function cardHTML(it, n) {
+    var v = !!visited[it.id];
+    var h = '<li class="card' + (v ? ' visited' : '') + '" data-id="' + esc(it.id) + '">';
+    h += '<div class="head">';
+    h += '<button class="num" type="button" data-act="locate" aria-label="Ver ' + n + ' en el mapa">' + n + '</button>';
+    h += '<div class="title"><h2' + (it.noName ? ' class="noname"' : '') + '>' + esc(it.name) + '</h2>';
+    h += '<div class="meta">' + fmtKm(it.dist) + '</div></div>';
+    h += '<label class="visit"><input type="checkbox" data-act="visit"' + (v ? ' checked' : '') + '>Visitado</label>';
+    h += '</div>';
+    if (it.address) h += '<div class="addr">' + esc(it.address) + '</div>';
+    if (it.phones.length) {
+      h += '<div class="tels">' + it.phones.map(function (p) {
+        return '<a class="tel" href="tel:' + esc(p.dial) + '">📞 ' + esc(p.label) + '</a>';
+      }).join('') + '</div>';
+    }
+    var info = '';
+    if (it.email) info += '<div><span aria-hidden="true">✉️</span><a href="mailto:' + esc(it.email) + '">' + esc(it.email) + '</a></div>';
+    if (it.web) info += '<div><span aria-hidden="true">🌐</span><a href="' + esc(webHref(it.web)) + '" target="_blank" rel="noopener noreferrer">' + esc(webLabel(it.web)) + '</a></div>';
+    if (it.hours) info += '<div><span aria-hidden="true">🕒</span><span>' + esc(it.hours) + '</span></div>';
+    if (info) h += '<div class="info">' + info + '</div>';
+    h += '<div class="links">' +
+      '<a href="' + gmaps(it) + '" target="_blank" rel="noopener">🗺️ Google Maps</a>' +
+      '<a href="' + gdir(it) + '" target="_blank" rel="noopener">🚗 Cómo llegar</a>' +
+      '</div>';
+    return h + '</li>';
+  }
+
+  function render(fit) {
+    var list = state.items.filter(function (it) { return !prefs.phoneOnly || it.phones.length; });
+    state.shown = list;
+    if (!state.center) {
+      els.list.innerHTML = '<li class="empty">Busca una ciudad, dirección o código postal, o pulsa «📍 Mi ubicación» para ver los talleres cercanos.</li>';
+    } else if (!state.items.length) {
+      els.list.innerHTML = '<li class="empty">No hay talleres registrados en OpenStreetMap a ' + prefs.radius + ' km. Prueba con un radio mayor.</li>';
+    } else if (!list.length) {
+      els.list.innerHTML = '<li class="empty">Ningún taller con teléfono en este radio. Desactiva «Solo con teléfono» o amplía el radio.</li>';
+    } else {
+      els.list.innerHTML = list.map(function (it, i) { return cardHTML(it, i + 1); }).join('');
+    }
+    drawMarkers(list, fit);
+    updateSummary();
+    els.csvBtn.disabled = els.copyBtn.disabled = !list.length;
+  }
+
+  function updateSummary() {
+    if (!state.center) { els.summary.textContent = ''; return; }
+    var total = state.items.length;
+    var withTel = state.items.filter(function (i) { return i.phones.length; }).length;
+    var vis = state.shown.filter(function (i) { return visited[i.id]; }).length;
+    var s = total + (total === 1 ? ' taller' : ' talleres') + ' a ' + prefs.radius + ' km de ' + state.center.label +
+      ' · ' + withTel + ' con teléfono';
+    if (vis) s += ' · ' + vis + (vis === 1 ? ' visitado' : ' visitados');
+    if (prefs.phoneOnly && state.shown.length !== total) s += ' · mostrando ' + state.shown.length;
+    els.summary.textContent = s;
+  }
+
+  /* ---------- estado / avisos ---------- */
+  var busyTimer = null, busyStart = 0;
+  function setStatus(msg, kind, onRetry) {
+    clearInterval(busyTimer);
+    busyTimer = null;
+    if (!msg) { els.status.hidden = true; els.status.textContent = ''; return; }
+    els.status.className = 'status' + (kind ? ' ' + kind : '');
+    els.status.innerHTML = (kind === 'busy' ? '<span class="spinner" aria-hidden="true"></span>' : '') +
+      '<span class="msg"></span>' + (kind === 'busy' ? '<span class="secs"></span>' : '');
+    els.status.querySelector('.msg').textContent = msg;
+    if (kind === 'busy') {
+      if (!busyStart) busyStart = Date.now();
+      var secs = els.status.querySelector('.secs');
+      var tick = function () {
+        var s = Math.round((Date.now() - busyStart) / 1000);
+        secs.textContent = s >= 3 ? s + ' s' : '';
+      };
+      tick();
+      busyTimer = setInterval(tick, 1000);
+    } else {
+      busyStart = 0;
+    }
+    if (onRetry) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn small retry';
+      b.textContent = 'Reintentar';
+      b.addEventListener('click', onRetry);
+      els.status.appendChild(b);
+    }
+    els.status.hidden = false;
+  }
+
+  var toastT = null;
+  function toast(msg) {
+    els.toast.textContent = msg;
+    els.toast.classList.add('show');
+    clearTimeout(toastT);
+    toastT = setTimeout(function () { els.toast.classList.remove('show'); }, 2200);
+  }
+
+  /* ---------- búsqueda ---------- */
+  // job = { getCenter: function(signal) -> Promise<{lat,lon,label,mine}>, msg: 'texto inicial' }
+  async function run(job) {
+    if (state.ctrl) state.ctrl.abort();
+    var ctrl = new AbortController();
+    state.ctrl = ctrl;
+    state.lastJob = job;
+    var signal = ctrl.signal;
+    var radius = prefs.radius;
+    busyStart = 0;
+    try {
+      setStatus(job.msg || 'Buscando…', 'busy');
+      var c = await job.getCenter(signal);
+      if (signal.aborted) return;
+      setStatus('Buscando talleres a ' + radius + ' km…', 'busy');
+      var elements = await overpass(c.lat, c.lon, radius, signal, function () {
+        if (!signal.aborted) setStatus('Buscando talleres a ' + radius + ' km (probando servidor alternativo)…', 'busy');
+      });
+      if (signal.aborted) return;
+      var items = toItems(elements, c);
+      state.center = c;
+      state.fetched = { center: c, radius: radius, items: items };
+      state.items = items;
+      state.selected = null;
+      drawCenter();
+      setStatus('');
+      render(true);
+    } catch (e) {
+      if (signal.aborted) return;
+      if (window.console) console.error(e);
+      setStatus(e && e.user ? e.message : 'Ha ocurrido un error inesperado. Inténtalo de nuevo.', 'error',
+        function () { run(job); });
+    } finally {
+      if (state.ctrl === ctrl) state.ctrl = null;
+    }
+  }
+
+  function centerJob(c) {
+    return { getCenter: function () { return Promise.resolve(c); }, msg: 'Buscando…' };
+  }
+
+  /* ---------- CSV / copiar ---------- */
+  function csvCell(v) {
+    v = v == null ? '' : String(v);
+    if (/^[=+\-@]/.test(v)) v = ' ' + v; // evita que Excel lo trate como fórmula
+    return '"' + v.replace(/"/g, '""') + '"';
+  }
+
+  function slug(s) {
+    return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'busqueda';
+  }
+
+  function today() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function exportCSV() {
+    var list = state.shown;
+    if (!list.length) return;
+    var rows = [['Nº', 'Nombre', 'Distancia (km)', 'Dirección', 'Teléfono', 'Email', 'Web', 'Horario', 'Visitado', 'Google Maps', 'OpenStreetMap']];
+    list.forEach(function (it, i) {
+      rows.push([
+        i + 1, it.name, kmNum(it.dist), it.address,
+        it.phones.map(function (p) { return p.label; }).join(' / '),
+        it.email, it.web, it.hours, visited[it.id] ? 'Sí' : 'No', gmaps(it), osmUrl(it)
+      ]);
+    });
+    var csv = rows.map(function (r) { return r.map(csvCell).join(';'); }).join('\r\n') + '\r\n';
+    var blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'talleres_' + slug(state.center ? state.center.label : '') + '_' + prefs.radius + 'km_' + today() + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+    toast('CSV generado (' + list.length + ')');
+  }
+
+  function buildText() {
+    var list = state.shown;
+    var lines = ['Talleres a ' + prefs.radius + ' km de ' + (state.center ? state.center.label : '') + ' (' + list.length + ')', ''];
+    list.forEach(function (it, i) {
+      lines.push((i + 1) + '. ' + it.name + ' — ' + fmtKm(it.dist) + (visited[it.id] ? ' [visitado]' : ''));
+      if (it.address) lines.push('   ' + it.address);
+      if (it.phones.length) lines.push('   Tel: ' + it.phones.map(function (p) { return p.label; }).join(' / '));
+      if (it.email) lines.push('   Email: ' + it.email);
+      if (it.web) lines.push('   Web: ' + it.web);
+      if (it.hours) lines.push('   Horario: ' + it.hours);
+      lines.push('   ' + gmaps(it));
+      lines.push('');
+    });
+    return lines.join('\n').trim() + '\n';
+  }
+
+  function copyFallback(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.fontSize = '16px';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  async function copyList() {
+    if (!state.shown.length) return;
+    var text = buildText();
+    var ok = false;
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); ok = true; } catch (e) { ok = false; }
+    }
+    if (!ok) ok = copyFallback(text);
+    toast(ok ? 'Lista copiada (' + state.shown.length + ')' : 'No se pudo copiar la lista');
+  }
+
+  /* ---------- eventos ---------- */
+  function updateRadiusUI() {
+    Array.prototype.forEach.call(els.radius.querySelectorAll('button'), function (b) {
+      b.setAttribute('aria-checked', String(Number(b.dataset.r) === prefs.radius));
+    });
+  }
+
+  els.form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var q = els.q.value.trim();
+    if (!q) { setStatus('Escribe una ciudad, dirección o código postal.', 'error'); els.q.focus(); return; }
+    els.q.blur();
+    prefs.q = q;
+    save(KEY_PREFS, prefs);
+    run({ getCenter: function (signal) { return geocode(q, signal); }, msg: 'Buscando «' + q + '»…' });
+  });
+
+  els.geoBtn.addEventListener('click', function () {
+    run({ getCenter: function () { return getPosition(); }, msg: 'Buscando tu ubicación…' });
+  });
+
+  els.radius.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-r]');
+    if (!b) return;
+    var r = Number(b.dataset.r);
+    if (RADII.indexOf(r) < 0 || r === prefs.radius) return;
+    prefs.radius = r;
+    save(KEY_PREFS, prefs);
+    updateRadiusUI();
+    if (state.ctrl && state.lastJob) {
+      // Hay una búsqueda en curso: repetirla con el nuevo radio.
+      run(state.lastJob);
+    } else if (state.center && state.fetched && state.fetched.center === state.center && state.fetched.radius >= r) {
+      // Radio menor que el ya descargado: filtrar en local, sin nueva consulta.
+      state.items = state.fetched.items.filter(function (it) { return it.dist <= r; });
+      state.selected = null;
+      setStatus('');
+      drawCenter();
+      render(true);
+    } else if (state.center) {
+      run(centerJob(state.center));
+    }
+  });
+
+  els.phoneOnly.addEventListener('change', function () {
+    prefs.phoneOnly = els.phoneOnly.checked;
+    save(KEY_PREFS, prefs);
+    state.selected = null;
+    render(true);
+  });
+
+  els.list.addEventListener('change', function (e) {
+    var cb = e.target.closest('[data-act="visit"]');
+    if (!cb) return;
+    var li = cb.closest('.card');
+    var id = li.dataset.id;
+    if (cb.checked) visited[id] = Date.now(); else delete visited[id];
+    save(KEY_VISITED, visited);
+    li.classList.toggle('visited', cb.checked);
+    refreshMarker(id);
+    updateSummary();
+  });
+
+  els.list.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-act="locate"]');
+    if (!b) return;
+    focusOnMap(b.closest('.card').dataset.id);
+  });
+
+  els.csvBtn.addEventListener('click', exportCSV);
+  els.copyBtn.addEventListener('click', copyList);
+
+  /* ---------- inicio ---------- */
+  els.q.value = prefs.q || '';
+  els.phoneOnly.checked = !!prefs.phoneOnly;
+  updateRadiusUI();
+  initMap();
+  render(false);
+})();
+</script>
+</body>
+</html>
