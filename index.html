@@ -17,6 +17,7 @@
   --bg:#eef2f6; --card:#fff; --text:#15202b; --muted:#5b6876; --line:#d9e0e7;
   --accent:#0b5cab; --accent-soft:#e3eefb; --accent-ink:#fff;
   --tel:#1a7f37; --tel-ink:#fff; --err-bg:#fdecea; --err:#b3261e; --visited:#98a2ad;
+  --warn-bg:#fff4d6; --warn:#6b4700;
   --shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.05);
   color-scheme:light dark;
 }
@@ -25,6 +26,7 @@
     --bg:#0e1319; --card:#18212b; --text:#e6edf3; --muted:#98a6b4; --line:#2a3644;
     --accent:#4f9cff; --accent-soft:#13253a; --accent-ink:#06121f;
     --tel:#238636; --tel-ink:#fff; --err-bg:#3a1714; --err:#ffb4ab; --visited:#5d6873;
+    --warn-bg:#3a2e10; --warn:#ffd479;
     --shadow:none;
   }
 }
@@ -74,7 +76,8 @@ input[type=search]:focus{outline:2px solid var(--accent);outline-offset:-1px}
 .status.error{background:var(--err-bg);color:var(--err)}
 .status .msg{flex:1;min-width:0}
 .status .secs{flex:0 0 auto;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
-.status .retry{flex:0 0 auto;color:var(--err);border-color:currentColor;background:transparent}
+.status.warn{background:var(--warn-bg);color:var(--warn)}
+.status .retry{flex:0 0 auto;color:inherit;border-color:currentColor;background:transparent}
 .spinner{
   width:18px;height:18px;flex:0 0 auto;border:2.5px solid currentColor;border-right-color:transparent;
   border-radius:50%;animation:spin .8s linear infinite;
@@ -212,8 +215,12 @@ footer a{color:inherit}
   var KEY_PREFS = 'talleresCerca.prefs';
   var T_GEO = 15000, T_NOMINATIM = 15000;
   var T_OVERPASS = 30000;        // máx. por petición
-  var T_OVERPASS_TOTAL = 50000;  // máx. total de la búsqueda de talleres
+  var T_OVERPASS_TOTAL = 35000;  // máx. total de Overpass
   var T_HEDGE = 7000;            // si el principal tarda más, se consulta también la reserva
+  // Fuente alternativa (Nominatim) por si Overpass está caído:
+  var T_ALT_START = 6000;        // se lanza si Overpass falla o tarda más de esto
+  var T_ALT_ACCEPT = 12000;      // a partir de aquí se aceptan sus resultados si Overpass no ha respondido
+  var NOMINATIM_GAP = 1100;      // política de uso de Nominatim: máx. 1 petición por segundo
 
   function $(s) { return document.querySelector(s); }
   var els = {
@@ -239,7 +246,7 @@ footer a{color:inherit}
   var prefs = Object.assign({ radius: 5, phoneOnly: false, q: '' }, load(KEY_PREFS, {}));
   if (RADII.indexOf(prefs.radius) < 0) prefs.radius = 5;
 
-  var state = { center: null, items: [], shown: [], ctrl: null, selected: null, fetched: null, lastJob: null };
+  var state = { center: null, items: [], shown: [], ctrl: null, selected: null, fetched: null, lastJob: null, source: null };
 
   /* ---------- utilidades ---------- */
   function esc(s) {
@@ -309,7 +316,7 @@ footer a{color:inherit}
     });
     var data;
     try {
-      data = await fetchJSON(NOMINATIM + '?' + params.toString(), {}, T_NOMINATIM, signal);
+      data = await nominatimGet(params, signal);
     } catch (e) {
       if (signal.aborted) throw e;
       throw userError(e.timeout
@@ -423,6 +430,96 @@ footer a{color:inherit}
       if (errs.some(isBusy)) throw userError('Los servidores de OpenStreetMap están saturados ahora mismo. Inténtalo de nuevo en un minuto.');
       if (errs.every(function (e) { return e && e.timeout; })) throw userError('Los servidores de OpenStreetMap tardan demasiado. Prueba con un radio menor o inténtalo más tarde.');
       throw userError('No se pudo conectar con los servidores de OpenStreetMap. Revisa la conexión e inténtalo de nuevo.');
+    });
+  }
+
+  /* ---------- Fuente alternativa: Nominatim ---------- */
+  var lastNominatim = 0;
+  async function nominatimGet(params, signal) {
+    var wait = lastNominatim + NOMINATIM_GAP - Date.now();
+    if (wait > 0) await sleep(wait, signal);
+    lastNominatim = Date.now();
+    return fetchJSON(NOMINATIM + '?' + params.toString(), {}, T_NOMINATIM, signal);
+  }
+
+  // Resultado de Nominatim -> elemento con el mismo formato que Overpass (para reutilizar toItems).
+  function nominatimToElement(d) {
+    var a = d.address || {};
+    var tags = Object.assign({}, d.extratags || {});
+    if (d.name) tags.name = d.name;
+    var street = a.road || a.pedestrian || a.square || '';
+    var city = a.city || a.town || a.village || a.municipality || '';
+    if (street && !tags['addr:street']) tags['addr:street'] = street;
+    if (a.house_number && !tags['addr:housenumber']) tags['addr:housenumber'] = a.house_number;
+    if (a.postcode && !tags['addr:postcode']) tags['addr:postcode'] = a.postcode;
+    if (city && !tags['addr:city']) tags['addr:city'] = city;
+    return { type: d.osm_type, id: d.osm_id, lat: parseFloat(d.lat), lon: parseFloat(d.lon), tags: tags };
+  }
+
+  // Talleres (shop=car_repair) dentro del cuadrado que contiene el círculo; hasta 3 páginas de 40.
+  async function nominatimPOIs(lat, lon, km, signal) {
+    var dLat = km / 111.32, dLon = km / (111.32 * Math.cos(lat * Math.PI / 180));
+    var viewbox = [lon - dLon, lat + dLat, lon + dLon, lat - dLat].map(function (n) { return n.toFixed(5); }).join(',');
+    var out = [], seen = {}, exclude = [];
+    for (var page = 0; page < 3; page++) {
+      var params = new URLSearchParams({
+        q: '[car repair]', format: 'jsonv2', countrycodes: 'es', viewbox: viewbox, bounded: '1',
+        limit: '40', extratags: '1', addressdetails: '1', 'accept-language': 'es'
+      });
+      if (exclude.length) params.set('exclude_place_ids', exclude.join(','));
+      var data = await nominatimGet(params, signal);
+      if (!Array.isArray(data)) throw new Error('Respuesta no válida');
+      data.forEach(function (d) {
+        if (d.place_id != null) exclude.push(d.place_id);
+        var key = d.osm_type + '/' + d.osm_id;
+        if (!d.osm_type || seen[key]) return;
+        seen[key] = 1;
+        out.push(nominatimToElement(d));
+      });
+      if (data.length < 40) break;
+    }
+    return out;
+  }
+
+  // Overpass es la fuente principal (completa). Si falla o tarda, se consulta Nominatim en paralelo
+  // y se usan sus resultados cuando Overpass ha fallado o ya han pasado T_ALT_ACCEPT ms.
+  function findWorkshops(lat, lon, km, signal, onFallback) {
+    return new Promise(function (resolve, reject) {
+      var t0 = Date.now();
+      var opCtrl = new AbortController(), altCtrl = new AbortController();
+      var opErr = null, alt = null, altErr = null, altStarted = false, done = false;
+      var startT = setTimeout(startAlt, T_ALT_START);
+      var acceptT = setTimeout(check, T_ALT_ACCEPT);
+      var onOuter = function () { finish(reject, new Error('abort')); };
+      signal.addEventListener('abort', onOuter);
+
+      function finish(fn, value) {
+        if (done) return;
+        done = true;
+        clearTimeout(startT);
+        clearTimeout(acceptT);
+        signal.removeEventListener('abort', onOuter);
+        opCtrl.abort();
+        altCtrl.abort();
+        fn(value);
+      }
+      function check() {
+        if (done) return;
+        var altUsable = alt && (opErr || (alt.length && Date.now() - t0 >= T_ALT_ACCEPT));
+        if (altUsable) finish(resolve, { elements: alt, source: 'nominatim' });
+        else if (opErr && altErr) finish(reject, opErr);
+      }
+      function startAlt() {
+        if (done || altStarted) return;
+        altStarted = true;
+        nominatimPOIs(lat, lon, km, altCtrl.signal).then(
+          function (els) { alt = els; check(); },
+          function (e) { altErr = e; check(); });
+      }
+
+      overpass(lat, lon, km, opCtrl.signal, onFallback).then(
+        function (els) { finish(resolve, { elements: els, source: 'overpass' }); },
+        function (e) { if (done) return; opErr = e; startAlt(); check(); });
     });
   }
 
@@ -685,6 +782,7 @@ footer a{color:inherit}
       ' · ' + withTel + ' con teléfono';
     if (vis) s += ' · ' + vis + (vis === 1 ? ' visitado' : ' visitados');
     if (prefs.phoneOnly && state.shown.length !== total) s += ' · mostrando ' + state.shown.length;
+    if (state.source === 'nominatim') s += ' · búsqueda alternativa';
     els.summary.textContent = s;
   }
 
@@ -744,17 +842,26 @@ footer a{color:inherit}
       var c = await job.getCenter(signal);
       if (signal.aborted) return;
       setStatus('Buscando talleres a ' + radius + ' km…', 'busy');
-      var elements = await overpass(c.lat, c.lon, radius, signal, function () {
+      var res = await findWorkshops(c.lat, c.lon, radius, signal, function () {
         if (!signal.aborted) setStatus('Buscando talleres a ' + radius + ' km (probando servidor alternativo)…', 'busy');
       });
       if (signal.aborted) return;
-      var items = toItems(elements, c);
+      var items = toItems(res.elements, c).filter(function (it) {
+        // Nominatim busca en un cuadrado: quitar las esquinas fuera del radio.
+        return res.source !== 'nominatim' || it.dist <= radius;
+      });
       state.center = c;
+      state.source = res.source;
       state.fetched = { center: c, radius: radius, items: items };
       state.items = items;
       state.selected = null;
       drawCenter();
-      setStatus('');
+      if (res.source === 'nominatim') {
+        setStatus('Los servidores de mapas están saturados: resultados de la búsqueda alternativa. Puede faltar algún taller.',
+          'warn', function () { run(job); });
+      } else {
+        setStatus('');
+      }
       render(true);
     } catch (e) {
       if (signal.aborted) return;
